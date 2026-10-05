@@ -1,4 +1,5 @@
 import {cities,categories,sampleBudget} from './data.js';
+import {extractPDF,parseStatementLines} from './pdf-import.js';
 import {total,estimate,parseCSV,parseAmount,buildTransactions,aggregate} from './model.js';
 
 const $=id=>document.getElementById(id);
@@ -20,7 +21,7 @@ $('budget-inputs').innerHTML=categories.map(c=>`<div class="budget-row">${icon(c
 function render(){
   const currentTotal=total(state.budget),target=city(state.active),budget=projected(state.active),targetTotal=total(budget),difference=targetTotal-currentTotal;
   $('budget-total').innerHTML=`${money(currentTotal)}<span>/mo</span>`;
-  $('source-note').textContent=state.source==='example'?'Example budget · edit to make it yours':state.source==='csv'?'Imported budget · editable amounts':'Your monthly budget';
+  $('source-note').textContent=state.source==='example'?'Example budget · edit to make it yours':['csv','pdf'].includes(state.source)?'Imported budget · editable amounts':'Your monthly budget';
   $('budget-strip').innerHTML=categories.map(c=>`<span style="width:${currentTotal?state.budget[c.id]/currentTotal*100:0}%;background:${c.color}" title="${c.name}: ${money(state.budget[c.id])}"></span>`).join('');
   $('city-cards').innerHTML=state.selected.map(id=>{
     const c=city(id),t=total(projected(id)),d=t-currentTotal,pct=currentTotal?Math.abs(d/currentTotal*100):0;
@@ -84,22 +85,25 @@ $('city-search').addEventListener('input',renderCityPicker);
 $('city-options').addEventListener('change',event=>{const input=event.target;if(input.type!=='checkbox')return;if(input.checked && draftCities.length<3)draftCities.push(input.value);else draftCities=draftCities.filter(id=>id!==input.value);const focusId=input.value;renderCityPicker();$('city-options').querySelector(`input[value="${focusId}"]`)?.focus();});
 $('apply-cities').addEventListener('click',()=>{state.selected=[...draftCities];if(!state.selected.includes(state.active))state.active=state.selected[0];$('cities-dialog').close();render();announce('City shortlist updated.');});
 
-let csv=null,transactions=[];
+let csv=null,transactions=[],importKind='csv',pdfLines=[];
 const mappings=['amount-column','description-column','category-column'];
 const months=()=>Number($('import-months').value);
 function showError(message){$('import-error').textContent=message;$('import-error').hidden=false;}
 function updateImportTotal(){
-  const valid=Number.isInteger(months())&&months()>=1&&months()<=120&&$('amount-column').value!==$('description-column').value;
+  const valid=Number.isInteger(months())&&months()>=1&&months()<=120&&(importKind==='pdf'||$('amount-column').value!==$('description-column').value);
   const included=transactions.filter(t=>categories.some(c=>c.id===t.category));
+  const validRows=included.every(t=>t.description.trim()&&Number.isFinite(t.amount)&&t.amount>0&&t.amount<=10000000);
   $('import-total').textContent=valid?`${money(total(aggregate(included,months())))}/mo · ${included.length} included`:'Enter 1–120 complete months';
-  $('apply-import').disabled=!valid||!included.length;
+  $('apply-import').disabled=!valid||!validRows||!included.length||(importKind==='pdf'&&!$('pdf-confirm').checked);
+}
+function updateReviewNote(){
+  const missing=transactions.filter(t=>t.category==='review').length,excluded=transactions.filter(t=>t.category==='exclude').length;
+  $('review-note').textContent=`${missing} need a bucket · ${excluded} marked excluded. ${importKind==='pdf'?'Check amounts as well as categories.':'All rows appear below.'}`;
 }
 function renderTransactions(){
-  $('review-count').textContent=`${transactions.length} spending rows`;
-  const missing=transactions.filter(t=>t.category==='review').length;
-  const excluded=transactions.filter(t=>t.category==='exclude').length;
-  $('review-note').textContent=`${missing} need a bucket · ${excluded} marked excluded. All rows appear below.`;
-  $('transaction-list').innerHTML=transactions.map((t,i)=>`<div class="transaction-row"><span>${escape(t.description)}</span><span class="transaction-amount">${money(t.amount)}</span><select data-transaction="${i}" data-review="${t.category==='review'}" aria-label="Category for ${escape(t.description)}"><option value="review" ${t.category==='review'?'selected':''}>Choose a bucket</option>${categories.map(c=>`<option value="${c.id}" ${t.category===c.id?'selected':''}>${c.name}</option>`).join('')}<option value="exclude" ${t.category==='exclude'?'selected':''}>Exclude</option></select></div>`).join('')||'<p class="empty-state">No spending rows found. Try changing whether spending is positive or negative.</p>';
+  $('review-count').textContent=`${transactions.length} ${importKind==='pdf'?'extracted':'spending'} rows`;
+  updateReviewNote();
+  $('transaction-list').innerHTML=transactions.map((t,i)=>`<div class="transaction-row ${importKind==='pdf'?'pdf-row':''}">${importKind==='pdf'?`<div><input class="transaction-description" data-description="${i}" value="${escape(t.description)}" aria-label="Description for transaction ${i+1}"><span class="pdf-row-meta">${escape(t.date||'Added manually')}${t.page?` · Page ${t.page}`:''}${t.multipleAmounts?' · Multiple amounts on line':''}</span></div><input class="transaction-amount-input" data-amount="${i}" type="number" min="0.01" max="10000000" step="0.01" value="${t.amount}" aria-label="Amount in dollars for transaction ${i+1}">`:`<span>${escape(t.description)}</span><span class="transaction-amount">${money(t.amount)}</span>`}<select data-transaction="${i}" data-review="${t.category==='review'}" aria-label="Category for ${escape(t.description||`transaction ${i+1}`)}"><option value="review" ${t.category==='review'?'selected':''}>Choose a bucket</option>${categories.map(c=>`<option value="${c.id}" ${t.category===c.id?'selected':''}>${c.name}</option>`).join('')}<option value="exclude" ${t.category==='exclude'?'selected':''}>Exclude</option></select></div>`).join('')||`<p class="empty-state">${importKind==='pdf'?'No dated transactions were detected. View the extracted text and add the transactions manually, or try a CSV export.':'No spending rows found. Try changing whether spending is positive or negative.'}</p>`;
   updateImportTotal();
 }
 function rebuildTransactions(){
@@ -109,29 +113,65 @@ function rebuildTransactions(){
   const built=buildTransactions(csv,mapping,$('amount-sign').value);transactions=built.transactions;
   $('import-error').hidden=true;
   if(built.invalid)showError(`${built.invalid} row${built.invalid===1?' has':'s have'} an unreadable amount and will be skipped. Check these in your file before continuing. USD amounts such as 12.50, $12.50, or (12.50) are supported.`);
-  renderTransactions();
-  $('review-count').textContent+=` · ${built.skipped} non-spending rows skipped`;
+  renderTransactions();$('review-count').textContent+=` · ${built.skipped} non-spending rows skipped`;
+}
+function rebuildPDF(){
+  transactions=parseStatementLines(pdfLines,$('pdf-amount-position').value,$('pdf-negative-meaning').value).transactions;
+  $('pdf-confirm').checked=false;renderTransactions();
 }
 $('csv-button').addEventListener('click',()=>$('import-dialog').showModal());
 $('csv-file').addEventListener('change',async event=>{
   const file=event.target.files?.[0];if(!file)return;
-  $('import-settings').hidden=true;$('import-error').hidden=true;csv=null;transactions=[];
-  if(file.size>2*1024*1024){showError('Choose a CSV smaller than 2 MB.');return;}
+  $('import-settings').hidden=true;$('import-error').hidden=true;$('import-progress').hidden=true;csv=null;transactions=[];pdfLines=[];
+  importKind=/\.pdf$/i.test(file.name)||file.type==='application/pdf'?'pdf':'csv';
+  const max=importKind==='pdf'?10:2;
+  if(file.size>max*1024*1024){showError(`Choose a ${importKind.toUpperCase()} smaller than ${max} MB.`);event.target.value='';return;}
+  if(!/\.(?:csv|pdf)$/i.test(file.name)&&!['application/pdf','text/csv'].includes(file.type)){showError('Please choose a PDF statement or CSV file.');event.target.value='';return;}
+  $('upload-label').textContent=file.name;event.target.disabled=true;
   try{
-    csv=parseCSV(await file.text());$('upload-label').textContent=file.name;
-    const options=csv.headers.map((h,i)=>`<option value="${i}">${escape(h)}</option>`).join('');
-    $('amount-column').innerHTML=options;$('description-column').innerHTML=options;$('category-column').innerHTML='<option value="-1">None — guess from description</option>'+options;
-    const find=rx=>csv.headers.findIndex(h=>rx.test(h.toLowerCase()));
-    const a=find(/amount|debit|withdrawal|cost/),d=find(/description|merchant|payee|memo|name/),c=find(/category|bucket/);
-    $('amount-column').value=a>=0?a:csv.headers.length-1;$('description-column').value=d>=0?d:0;$('category-column').value=c;
-    const aIndex=Number($('amount-column').value),values=csv.rows.map(r=>parseAmount(r[aIndex])).filter(v=>v!==null);
-    $('amount-sign').value=values.filter(v=>v<0).length>values.filter(v=>v>0).length?'negative':'positive';
-    $('import-months').value='1';$('import-settings').hidden=false;rebuildTransactions();
-  }catch(error){showError(error.message||'This file could not be read. Please try a standard UTF-8 CSV.');}
+    $('csv-mapping').hidden=importKind==='pdf';$('pdf-settings').hidden=importKind!=='pdf';$('pdf-confirm-label').hidden=importKind!=='pdf';$('add-pdf-row').hidden=importKind!=='pdf';$('pdf-confirm').checked=false;$('import-months').value='1';
+    if(importKind==='pdf'){
+      $('import-progress').hidden=false;$('import-progress').textContent='Opening PDF…';
+      const result=await extractPDF(file,message=>{$('import-progress').textContent=message;});
+      pdfLines=result.lines;$('pdf-raw-text').textContent=pdfLines.map(l=>`[Page ${l.page}] ${l.text}`).join('\n');
+      $('pdf-amount-position').value='first';$('pdf-negative-meaning').value='credit';
+      $('import-settings').hidden=false;rebuildPDF();
+      $('import-progress').textContent=`Read ${result.pages} page${result.pages===1?'':'s'}. Review the extracted transactions below.`;
+    }else{
+      csv=parseCSV(await file.text());
+      const options=csv.headers.map((h,i)=>`<option value="${i}">${escape(h)}</option>`).join('');
+      $('amount-column').innerHTML=options;$('description-column').innerHTML=options;$('category-column').innerHTML='<option value="-1">None — guess from description</option>'+options;
+      const find=rx=>csv.headers.findIndex(h=>rx.test(h.toLowerCase()));
+      const a=find(/amount|debit|withdrawal|cost/),d=find(/description|merchant|payee|memo|name/),c=find(/category|bucket/);
+      $('amount-column').value=a>=0?a:csv.headers.length-1;$('description-column').value=d>=0?d:0;$('category-column').value=c;
+      const aIndex=Number($('amount-column').value),values=csv.rows.map(r=>parseAmount(r[aIndex])).filter(v=>v!==null);
+      $('amount-sign').value=values.filter(v=>v<0).length>values.filter(v=>v>0).length?'negative':'positive';
+      $('import-settings').hidden=false;rebuildTransactions();
+    }
+  }catch(error){showError(error.message||'This file could not be read. Please try another statement or a CSV export.');$('import-progress').hidden=true;}
+  finally{event.target.disabled=false;event.target.value='';}
 });
 [...mappings,'amount-sign'].forEach(id=>$(id).addEventListener('change',rebuildTransactions));
+['pdf-amount-position','pdf-negative-meaning'].forEach(id=>$(id).addEventListener('change',rebuildPDF));
+$('pdf-confirm').addEventListener('change',updateImportTotal);
 $('import-months').addEventListener('input',updateImportTotal);
-$('transaction-list').addEventListener('change',event=>{const index=event.target.dataset.transaction;if(index===undefined)return;transactions[Number(index)].category=event.target.value;event.target.dataset.review=String(event.target.value==='review');const missing=transactions.filter(t=>t.category==='review').length,excluded=transactions.filter(t=>t.category==='exclude').length;$('review-note').textContent=`${missing} need a bucket · ${excluded} marked excluded. All rows appear below.`;updateImportTotal();});
-$('apply-import').addEventListener('click',()=>{if($('apply-import').disabled)return;state.budget=aggregate(transactions,months());state.source='csv';state.overrides={};syncInputs();$('import-dialog').close();announce('Your CSV budget is ready. City estimates updated.');});
+$('transaction-list').addEventListener('change',event=>{
+  const index=event.target.dataset.transaction;if(index===undefined)return;
+  transactions[Number(index)].category=event.target.value;event.target.dataset.review=String(event.target.value==='review');
+  if(importKind==='pdf')$('pdf-confirm').checked=false;updateReviewNote();updateImportTotal();
+});
+$('transaction-list').addEventListener('input',event=>{
+  const el=event.target;
+  if(el.dataset.amount!==undefined)transactions[Number(el.dataset.amount)].amount=el.valueAsNumber;
+  else if(el.dataset.description!==undefined)transactions[Number(el.dataset.description)].description=el.value;
+  else return;
+  $('pdf-confirm').checked=false;updateImportTotal();
+});
+$('add-pdf-row').addEventListener('click',()=>{
+  if(transactions.length>=10000){showError('Please import at most 10,000 transactions.');return;}
+  transactions.push({description:'',amount:0,category:'review'});$('pdf-confirm').checked=false;renderTransactions();
+  const last=$('transaction-list').lastElementChild;last.scrollIntoView({block:'nearest'});last.querySelector('input').focus();
+});
+$('apply-import').addEventListener('click',()=>{if($('apply-import').disabled)return;state.budget=aggregate(transactions,months());state.source=importKind;state.overrides={};syncInputs();$('import-dialog').close();announce(`Your ${importKind.toUpperCase()} budget is ready. City estimates updated.`);});
 $('sample-csv').addEventListener('click',()=>{const contents='date,description,amount,category\n2026-09-01,Apartment rent,2200,rent\n2026-09-03,Groceries,420,groceries\n2026-09-06,"Coffee, takeout and restaurants",380,dining\n2026-09-08,Metro and rideshare,160,transport\n2026-09-10,Utilities and internet,150,utilities\n2026-09-12,Clothing and household shopping,210,shopping\n2026-09-15,Gym and concerts,220,entertainment\n2026-09-20,Subscriptions and insurance,180,fixed\n';const url=URL.createObjectURL(new Blob([contents],{type:'text/csv'}));const a=document.createElement('a');a.href=url;a.download='elsewhere-example.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
 render();
