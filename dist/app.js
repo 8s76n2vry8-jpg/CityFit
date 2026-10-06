@@ -10,7 +10,7 @@ const escape=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&g
 const city=id=>cities.find(c=>c.id===id);
 const paths={home:'M3 10 12 3l9 7M5 9v11h14V9M9 20v-7h6v7',basket:'m7 9 5-6 5 6M3 9h18l-2 11H5L3 9ZM9 12v5m6-5v5',coffee:'M4 5h12v9a5 5 0 0 1-5 5H9a5 5 0 0 1-5-5V5Zm12 1h2a3 3 0 0 1 0 6h-2M3 22h16',train:'M7 3h10a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2ZM5 11h14M8 15h1m6 0h1M8 19l-2 3m10-3 2 3',bolt:'m13 2-9 12h7l-1 8 10-12h-7l0-8',bag:'M5 8h14l1 13H4L5 8ZM8 8V6a4 4 0 0 1 8 0v2',music:'M9 18V5l11-2v13M9 8l11-2M9 18c0 2-2 3-4 3s-3-1-3-2 2-3 4-3 3 1 3 2Zm11-2c0 2-2 3-4 3s-3-1-3-2 2-3 4-3 3 1 3 2Z',repeat:'M4 9a8 8 0 0 1 13-5l3 3M20 3v4h-4M20 15a8 8 0 0 1-13 5l-3-3M4 21v-4h4'};
 const icon=c=>`<span class="category-icon" style="color:${c.color};background:${c.color}12" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="${paths[c.icon]}"/></svg></span>`;
-const deltaClass=n=>n<-0.5?'saving':n>.5?'more':'neutral';
+const deltaClass=n=>n<=-0.5?'saving':n>=.5?'more':'neutral';
 const deltaText=n=>Math.abs(n)<.5?'—':(n<0?'−':'+')+money(Math.abs(n));
 function projected(id){return estimate(state.budget,city(state.from),city(id),state.currentHousing,state.targetHousing,state.factor,state.overrides[id]??null);}
 function announce(s){$('live-status').textContent=s;}
@@ -23,7 +23,7 @@ function mood(difference,current){
   const ratio=difference/current;
   return ratio<-.2?'More breathing room':ratio<-.05?'A little lighter':ratio>.2?'A bigger stretch':ratio>.05?'A bigger budget':'Similar spending';
 }
-function directionLabel(difference){return difference<-.5?'Could cost less':difference>.5?'Could cost more':'About the same';}
+function directionLabel(difference){return (Math.abs(difference)<.5?'$0':deltaText(difference))+'/mo';}
 function renderDonut(){
   const sum=total(state.budget);let start=-90;
   const paths=categories.filter(c=>state.budget[c.id]>0).map(c=>{
@@ -55,6 +55,7 @@ function render(){
   const largest=categories.reduce((a,c)=>Math.abs(budget[c.id]-state.budget[c.id])>Math.abs(budget[a.id]-state.budget[a.id])?c:a,categories[0]);
   $('comparison-insight').textContent=!currentTotal?'A rough budget is all you need to start.':Math.abs(difference)<.5?'Your spending could stay close to what you know.':`${largest.name} would make the biggest difference. Your habits stay the same.`;
   $('current-legend').textContent=city(state.from).name;$('target-legend').textContent=target.name;
+  $('comparison-change-note').textContent=`Estimated monthly change compared with ${city(state.from).name}.`;
   const scale=Math.max(...Object.values(state.budget),...Object.values(budget),1);
   $('category-chart').innerHTML=categories.map(c=>{
     const before=state.budget[c.id],after=budget[c.id],d=after-before;
