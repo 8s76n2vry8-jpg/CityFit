@@ -32,6 +32,17 @@ test('CSV and PDF use the same categories and keep dates, credit exclusions, and
   assert.deepEqual(pdf.transactions.map(t=>t.category),['dining','transport','exclude']);assert.equal(pdf.transactions[0].originalDescriptor,'SQ *BLUE BOTTLE COF 1847');assert.equal(total(aggregate(pdf.transactions,1)),18.74);
   const coords=textItemsToLines([{str:'UBER',transform:[1,0,0,1,90,100],height:10},{str:'09/01',transform:[1,0,0,1,0,100],height:10},{str:'10.00',transform:[1,0,0,1,200,100],height:10}]);assert.equal(coords[0].text,'09/01 UBER 10.00');
 });
+test('Amex New Charges switches back to spending and dated statement prose is ignored',()=>{
+  const parsed=parseStatementLines([
+    {page:2,text:'Payments and Credits'},
+    {page:2,text:'07/18/26* AUTOPAY PAYMENT RECEIVED - THANK YOU -$3,984.14'},
+    {page:3,text:'New Charges'},
+    {page:3,text:'08/06/26 Uber Trip help.uber.com CA $9.69'},
+    {page:8,text:'09/18/26. This Date May Not Be The Same Date Your Bank Will Debit Your Pay Over Time Limit $15,000.00'}
+  ]);
+  assert.deepEqual(parsed.transactions.map(x=>x.category),['exclude','transport']);
+  assert.equal(parsed.transactions.some(x=>x.amount===15000),false);
+});
 test('splits conserve cents, average correctly, and block unbalanced or unassigned purchases',()=>{
   const t={description:'Target',amount:30.01,category:'review',splits:[{category:'groceries',amount:10.01},{category:'shopping',amount:20}]};assert(validSplits(t));const budget=aggregate([t],2);assert.equal(budget.groceries,5.01);assert.equal(budget.shopping,10);
   t.splits[1].amount=19.99;assert(!validSplits(t));assert.throws(()=>aggregate([t],1));assert.throws(()=>aggregate([{description:'X',amount:3,category:'review'}],1));assert.throws(()=>aggregate([],0));
