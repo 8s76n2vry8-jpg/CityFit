@@ -16,63 +16,103 @@ function projected(id){return estimate(state.budget,city(state.from),city(id),st
 function announce(s){$('live-status').textContent=s;}
 
 $('current-city').innerHTML=cities.map(c=>`<option value="${c.id}">${c.name}, ${c.state}</option>`).join('');
-$('budget-inputs').innerHTML=categories.map(c=>`<div class="budget-row">${icon(c)}<label for="budget-${c.id}">${c.name}</label><div class="money-field"><span aria-hidden="true">$</span><input type="number" id="budget-${c.id}" data-category="${c.id}" min="0" max="100000" step="0.01" value="${state.budget[c.id]}" inputmode="decimal" aria-label="${c.name}, dollars per month"></div></div>`).join('');
-
+$('budget-inputs').innerHTML=categories.map(c=>`<div class="budget-row">${icon(c)}<label for="budget-${c.id}">${c.name}</label><div class="money-field"><span aria-hidden="true">$</span><input type="number" id="budget-${c.id}" data-category="${c.id}" min="0" max="100000" step="0.01" required value="${state.budget[c.id]}" inputmode="decimal" aria-label="${c.name}, dollars per month"></div></div>`).join('');
+let activeCategory='rent';
+function mood(difference,current){
+  if(!current)return 'Make it yours';
+  const ratio=difference/current;
+  return ratio<-.2?'More breathing room':ratio<-.05?'A little lighter':ratio>.2?'A bigger stretch':ratio>.05?'A bigger budget':'Similar spending';
+}
+function directionLabel(difference){return difference<-.5?'Could cost less':difference>.5?'Could cost more':'About the same';}
+function renderDonut(){
+  const sum=total(state.budget);let start=-90;
+  const paths=categories.filter(c=>state.budget[c.id]>0).map(c=>{
+    const sweep=state.budget[c.id]/sum*360,end=start+sweep;
+    const point=angle=>({x:110+Math.cos(angle*Math.PI/180)*83,y:110+Math.sin(angle*Math.PI/180)*83});
+    const s=point(start+Math.min(1.6,sweep/4)),e=point(end-Math.min(1.6,sweep/4));
+    const path=sweep>359.99?`<circle cx="110" cy="110" r="83" fill="none" stroke="${c.color}" stroke-width="19"/>`:`<path data-donut-category="${c.id}" d="M ${s.x} ${s.y} A 83 83 0 ${sweep>180?1:0} 1 ${e.x} ${e.y}" fill="none" stroke="${c.color}" stroke-width="19" stroke-linecap="round"/>`;
+    start=end;return `<g data-edit="${c.id}" data-tip-title="${c.name}" data-tip-text="${escape(money(state.budget[c.id])+' per month · click to edit')}">${path}</g>`;
+  }).join('');
+  $('spending-donut').innerHTML=`<circle cx="110" cy="110" r="83" fill="none" stroke="#e9edf5" stroke-width="19"/>${paths}`;
+  $('category-chips').innerHTML=categories.map(c=>`<button data-edit="${c.id}" data-tip-title="${c.name}" data-tip-text="${escape(money(state.budget[c.id])+' per month · click to edit')}" aria-label="Edit ${c.name}: ${money(state.budget[c.id])} per month"><i style="background:${c.color}"></i>${c.name}</button>`).join('');
+}
 function render(){
   const currentTotal=total(state.budget),target=city(state.active),budget=projected(state.active),targetTotal=total(budget),difference=targetTotal-currentTotal;
-  $('budget-total').innerHTML=`${money(currentTotal)}<span>/mo</span>`;
-  $('source-note').textContent=state.source==='example'?'Example budget · edit to make it yours':['csv','pdf'].includes(state.source)?'Imported budget · editable amounts':'Your monthly budget';
-  $('budget-strip').innerHTML=categories.map(c=>`<span style="width:${currentTotal?state.budget[c.id]/currentTotal*100:0}%;background:${c.color}" title="${c.name}: ${money(state.budget[c.id])}"></span>`).join('');
+  $('budget-total').textContent=money(currentTotal);
+  $('example-label').hidden=state.source!=='example';
+  $('source-note').textContent=state.source==='example'?'An example to explore. Make it yours.':['csv','pdf'].includes(state.source)?'Your imported spending, ready to explore.':'Your spending. Your starting point.';
+  renderDonut();
+  const maxTotal=Math.max(currentTotal,...state.selected.map(id=>total(projected(id))),1);
+  $('city-cards').style.setProperty('--city-count',state.selected.length);
   $('city-cards').innerHTML=state.selected.map(id=>{
-    const c=city(id),t=total(projected(id)),d=t-currentTotal,pct=currentTotal?Math.abs(d/currentTotal*100):0;
-    const label=Math.abs(d)<.5?'Same monthly budget':currentTotal?`${pct.toFixed(0)}% ${d<0?'less':'more'} · ${money(Math.abs(d))}/mo`:`${money(t)}/mo estimated`;
-    return `<button class="city-card ${id===state.active?'selected':''}" data-city="${id}" aria-pressed="${id===state.active}" aria-label="View ${c.name}: ${money(t)} per month, ${escape(label)}"><span class="city-card-top"><span class="city-name">${c.name}<span class="state-tag">${c.state} / United States</span></span><span class="select-indicator" aria-hidden="true">✓</span></span><span class="city-total">${money(t)}<span class="city-month">/mo</span></span><span class="city-range">${money(t*.85)} – ${money(t*1.15)} scenario range</span><span class="city-change ${d>.5?'higher':Math.abs(d)<.5?'same':''}">${label}</span><span class="city-bar" aria-hidden="true"><span style="width:${currentTotal?Math.min(100,t/currentTotal*100):0}%"></span></span>${Object.hasOwn(state.overrides,id)?'<span class="city-override">Includes your actual rent</span>':''}</button>`;
+    const c=city(id),estimated=projected(id),sum=total(estimated),d=sum-currentTotal;
+    const mix=categories.map(cat=>`<i style="background:${cat.color};width:${sum?estimated[cat.id]/sum*100:0}%"></i>`).join('');
+    const tip=`${money(sum)} estimated per month · ${Math.abs(d)<.5?'similar to now':money(Math.abs(d))+(d<0?' less':' more')+' than now'}`;
+    return `<button class="city-tile ${id===state.active?'selected':''}" data-city="${id}" aria-pressed="${id===state.active}" aria-label="Compare ${c.name}. ${escape(tip)}" data-tip-title="${c.name}" data-tip-text="${escape(tip)}"><span class="tile-location">${c.state} / US<span class="tile-check" aria-hidden="true">${id===state.active?'✓':''}</span></span><span class="tile-city">${c.name}</span><span class="tile-mood">${mood(d,currentTotal)}</span><span class="tile-graph" aria-hidden="true"><span class="tile-bar now" style="width:${currentTotal/maxTotal*100}%"></span><span class="tile-bar projected" style="width:${sum/maxTotal*100}%">${mix}</span></span><span class="tile-footer">${id===state.active?'Comparing below':'Explore this city'}<span aria-hidden="true">${Object.hasOwn(state.overrides,id)?'Rent added':'◌'}</span></span></button>`;
   }).join('');
-  $('estimate-caption').textContent=currentTotal?'Monthly estimates based on your spending. Select a city to explore its breakdown.':'Enter your monthly spending to see personalized city estimates.';
-  $('breakdown-title').textContent=`Your spending in ${target.name}`;
+  $('estimate-caption').textContent=currentTotal?'Choose a city to see how your spending could change.':'Add your spending to start exploring cities.';
+  $('breakdown-title').textContent=!currentTotal?`Picture your life in ${target.name}.`:difference<-.5?`A little more room in ${target.name}.`:difference>.5?`Plan a little more for ${target.name}.`:`A familiar budget in ${target.name}.`;
+  const largest=categories.reduce((a,c)=>Math.abs(budget[c.id]-state.budget[c.id])>Math.abs(budget[a.id]-state.budget[a.id])?c:a,categories[0]);
+  $('comparison-insight').textContent=!currentTotal?'A rough budget is all you need to start.':Math.abs(difference)<.5?'Your spending could stay close to what you know.':`${largest.name} would make the biggest difference. Your habits stay the same.`;
   $('current-legend').textContent=city(state.from).name;$('target-legend').textContent=target.name;
-  $('from-column').textContent='Now';$('to-column').textContent=target.name;
-  const max=Math.max(...Object.values(state.budget),...Object.values(budget),1);
-  $('comparison-rows').innerHTML=categories.map(c=>{
+  const scale=Math.max(...Object.values(state.budget),...Object.values(budget),1);
+  $('category-chart').innerHTML=categories.map(c=>{
     const before=state.budget[c.id],after=budget[c.id],d=after-before;
-    return `<div class="comparison-row"><div><div class="category-label">${icon(c)}<span>${c.name}</span></div><div class="bar-pair" aria-hidden="true"><span class="bar-now" style="width:${before/max*100}%"></span><span class="bar-target" style="width:${after/max*100}%"></span></div></div><span class="amount now">${money(before)}</span><span class="amount projected">${money(after)}</span><span class="amount delta ${deltaClass(d)}">${deltaText(d)}</span></div>`;
+    return `<button class="chart-category" data-edit="${c.id}" data-tip-title="${c.name}" data-tip-text="${escape(city(state.from).name+': '+money(before)+' · '+target.name+': '+money(after)+' per month')}" aria-label="View and edit ${c.name}. ${money(before)} now, ${money(after)} estimated in ${target.name}."><span class="chart-category-name">${icon(c)}<span>${c.name}</span></span><span class="comparison-tracks" aria-hidden="true"><i class="comparison-now" style="width:${before/scale*100}%"></i><i class="comparison-target" style="width:${after/scale*100}%;background:${c.color}"></i></span><span class="category-direction ${deltaClass(d)}">${directionLabel(d)}</span><span class="chart-edit" aria-hidden="true">+</span></button>`;
   }).join('');
+  $('numbers-title').textContent=`Your spending in ${target.name}`;
+  $('detail-total').textContent=money(targetTotal);$('detail-change-label').textContent=difference<-.5?'Less than now':difference>.5?'More than now':'Difference';$('detail-change').textContent=money(Math.abs(difference));
+  $('detail-range').textContent=`Planning range: ${money(targetTotal*.85)}–${money(targetTotal*1.15)} per month. This ±15% scenario band is not a statistical confidence interval.`;
+  $('from-column').textContent=city(state.from).name;$('to-column').textContent=target.name;
+  $('comparison-rows').innerHTML=categories.map(c=>`<tr><th scope="row"><button class="table-category" data-edit="${c.id}">${c.name}</button></th><td>${money(state.budget[c.id])}</td><td>${money(budget[c.id])}</td><td class="${deltaClass(budget[c.id]-state.budget[c.id])}">${deltaText(budget[c.id]-state.budget[c.id])}</td></tr>`).join('');
   $('table-current').textContent=money(currentTotal);$('table-target').textContent=money(targetTotal);$('table-delta').textContent=deltaText(difference);$('table-delta').className=deltaClass(difference);
-  if(!currentTotal){$('annual-title').textContent='Start with your spending.';$('annual-text').textContent='Even a rough monthly budget is enough to explore the possibilities.';}
-  else if(Math.abs(difference)<.5){$('annual-title').textContent='A similar budget, a different backdrop.';$('annual-text').textContent='Your estimated monthly spending is about the same.';}
-  else{$('annual-title').textContent=difference<0?`${money(Math.abs(difference)*12)} more room in your yearly budget.`:`Plan for ${money(difference*12)} more per year.`;$('annual-text').textContent=`That’s ${money(Math.abs(difference))} ${difference<0?'less':'more'} each month in ${target.name}, assuming the same habits.`;}
+  $('annual-title').textContent=Math.abs(difference)<.5?'A similar yearly budget.':difference<0?`${money(Math.abs(difference)*12)} more room in your yearly budget.`:`Plan for ${money(difference*12)} more per year.`;
+  $('annual-text').textContent=`Assuming the same habits in ${target.name}. Moving costs, income changes, and taxes are not included.`;
   $('rent-city').textContent=target.name;
-  if(document.activeElement!==$('rent-override'))$('rent-override').value=state.overrides[state.active]??'';
-  $('rent-override').placeholder=`Estimated: ${money(budget.rent)}`;
-  $('reset-rent').hidden=!Object.hasOwn(state.overrides,state.active);
-  $('context-text').textContent=state.targetHousing==='shared'?`You’re comparing shared housing at ${Math.round(state.factor*100)}% of solo rent per person. Local rents and the number of roommates can change your costs.`:'Your habits stay the same; local prices change. Neighborhoods and your next apartment can make a big difference.';
+  $('context-text').textContent=state.targetHousing==='shared'?`Shared housing is estimated at ${Math.round(state.factor*100)}% of solo rent per person. Actual neighborhoods and roommates can change your costs.`:'CityFit uses relative city prices. Your actual apartment and transportation choices can change the estimate.';
 }
-
-$('budget-inputs').addEventListener('input',event=>{
-  const el=event.target;if(!el.dataset.category)return;el.setCustomValidity('');
-  if(el.value===''){state.budget[el.dataset.category]=0;el.setCustomValidity('');}
-  else if(!el.validity.valid||!Number.isFinite(el.valueAsNumber)){el.setCustomValidity('Enter an amount between $0 and $100,000.');el.reportValidity();return;}
-  else{el.setCustomValidity('');state.budget[el.dataset.category]=el.valueAsNumber;}
-  state.source='manual';render();
-});
-$('budget-inputs').addEventListener('focusout',event=>{if(event.target.dataset.category && event.target.value==='')event.target.value='0';});
-$('current-city').addEventListener('change',()=>{state.from=$('current-city').value;render();announce(`Current city changed to ${city(state.from).name}. Estimates updated.`);});
-$('current-housing').addEventListener('change',()=>{state.currentHousing=$('current-housing').value;render();});
-document.querySelectorAll('[data-housing]').forEach(button=>button.addEventListener('click',()=>{
-  state.targetHousing=button.dataset.housing;
-  document.querySelectorAll('[data-housing]').forEach(b=>{b.classList.toggle('active',b===button);b.setAttribute('aria-pressed',b===button?'true':'false');});render();announce('Housing changed. City estimates updated.');
-}));
-$('city-cards').addEventListener('click',event=>{const card=event.target.closest('[data-city]');if(card){state.active=card.dataset.city;render();announce(`Showing the spending breakdown for ${city(state.active).name}.`);}});
 function syncInputs(){categories.forEach(c=>$(`budget-${c.id}`).value=state.budget[c.id]);render();}
-$('clear-button').addEventListener('click',()=>{state.budget=Object.fromEntries(categories.map(c=>[c.id,0]));state.overrides={};state.source='manual';syncInputs();announce('All spending amounts cleared.');});
-$('example-button').addEventListener('click',()=>{state.budget={...sampleBudget};state.source='example';state.from='nyc';state.currentHousing='alone';$('current-city').value='nyc';$('current-housing').value='alone';state.overrides={};syncInputs();announce('New York example budget loaded.');});
-$('manual-button').addEventListener('click',()=>{$('budget-rent').focus();});
-$('rent-override').addEventListener('input',()=>{const el=$('rent-override');if(!el.value){delete state.overrides[state.active];el.setCustomValidity('');}else if(!el.validity.valid){el.reportValidity();return;}else state.overrides[state.active]=el.valueAsNumber;render();});
-$('reset-rent').addEventListener('click',()=>{delete state.overrides[state.active];$('rent-override').value='';render();});
+function showBudgetEditor(){categories.forEach(c=>$(`budget-${c.id}`).value=state.budget[c.id]);$('budget-dialog').showModal();$('budget-rent').focus();}
+function showCategory(id){
+  activeCategory=id;const c=categories.find(cat=>cat.id===id),target=city(state.active),estimated=projected(state.active);
+  $('category-title').textContent=c.name;$('category-intro').textContent=`Your spending today, compared with an estimate for ${target.name}.`;
+  $('category-from-name').textContent=city(state.from).name+' now';$('category-to-name').textContent=target.name+' estimate';$('category-current').textContent=money(state.budget[id]);$('category-projected').textContent=money(estimated[id]);$('category-amount').value=state.budget[id];$('category-price-note').textContent=c.index?`${target.name}’s estimate adjusts your current spending for local prices.`:'This category keeps the same amount across cities.';$('category-rent-link').hidden=id!=='rent';
+  document.querySelectorAll('dialog[open]').forEach(d=>d.close());$('category-chart').querySelector(`[data-edit="${id}"]`)?.focus({preventScroll:true});$('category-dialog').showModal();$('category-amount').focus();
+}
+function showRent(){document.querySelectorAll('dialog[open]').forEach(d=>d.close());$('rent-override').value=state.overrides[state.active]??'';$('rent-override').placeholder=`Estimated: ${money(projected(state.active).rent)}`;$('reset-rent').hidden=!Object.hasOwn(state.overrides,state.active);$('rent-dialog').showModal();$('rent-override').focus();}
+function showNumbers(){if($('numbers-dialog').open)return;hideTip();const fromCity=!!document.activeElement?.closest('[data-city]');render();if(fromCity)$('city-cards').querySelector(`[data-city="${state.active}"]`)?.focus({preventScroll:true});$('numbers-dialog').showModal();}
+function spendingSaved(message){$('budget-save-status').textContent=message;$('budget-save-status').hidden=false;announce(message);}
+$('budget-form').addEventListener('submit',event=>{event.preventDefault();const budget={};for(const c of categories){const input=$(`budget-${c.id}`);if(!input.reportValidity())return;budget[c.id]=input.valueAsNumber;}state.budget=budget;state.source='manual';syncInputs();$('budget-dialog').close();spendingSaved('Spending updated. Your city comparisons are ready.');});
+$('category-form').addEventListener('submit',event=>{event.preventDefault();const input=$('category-amount');if(!input.reportValidity())return;state.budget[activeCategory]=input.valueAsNumber;state.source='manual';syncInputs();$('category-dialog').close();$('category-chart').querySelector(`[data-edit="${activeCategory}"]`)?.focus({preventScroll:true});spendingSaved('Spending category updated. Your city comparisons are ready.');});
+$('rent-form').addEventListener('submit',event=>{event.preventDefault();const input=$('rent-override');if(!input.reportValidity())return;if(input.value==='')delete state.overrides[state.active];else state.overrides[state.active]=input.valueAsNumber;render();$('rent-dialog').close();spendingSaved('Rent updated. Your city comparison now includes your actual rent.');});
+$('reset-rent').addEventListener('click',()=>{delete state.overrides[state.active];$('rent-override').value='';$('reset-rent').hidden=true;render();$('rent-override').placeholder=`Estimated: ${money(projected(state.active).rent)}`;});
+for(const id of ['manual-button','budget-summary-button'])$(id).addEventListener('click',showBudgetEditor);
+for(const id of ['rent-button','category-rent-link'])$(id).addEventListener('click',showRent);
+$('numbers-button').addEventListener('click',showNumbers);
+$('current-city').addEventListener('change',()=>{state.from=$('current-city').value;render();announce('Current city changed. City comparisons updated.');});
+$('current-housing').addEventListener('change',()=>{state.currentHousing=$('current-housing').value;render();});
+document.querySelectorAll('[data-housing]').forEach(button=>button.addEventListener('click',()=>{state.targetHousing=button.dataset.housing;document.querySelectorAll('[data-housing]').forEach(b=>{b.classList.toggle('active',b===button);b.setAttribute('aria-pressed',b===button?'true':'false');});render();announce('Housing changed. City comparisons updated.');}));
+let lastCityClick={id:null,time:0};
+$('city-cards').addEventListener('click',event=>{const card=event.target.closest('[data-city]');if(!card)return;const now=performance.now(),id=card.dataset.city;if(lastCityClick.id===id&&now-lastCityClick.time<450){state.active=id;lastCityClick={id:null,time:0};showNumbers();return;}lastCityClick={id,time:now};if(state.active!==id){state.active=id;render();$('city-cards').querySelector(`[data-city="${id}"]`)?.focus({preventScroll:true});}announce(`Comparing your spending in ${city(state.active).name}.`);});
+$('city-cards').addEventListener('dblclick',event=>{const card=event.target.closest('[data-city]');if(card){state.active=card.dataset.city;showNumbers();}});
+$('clear-button').addEventListener('click',()=>{state.budget=Object.fromEntries(categories.map(c=>[c.id,0]));state.overrides={};state.source='manual';$('budget-save-status').hidden=true;syncInputs();showBudgetEditor();announce('Start with your own monthly spending.');});
+$('example-button').addEventListener('click',()=>{state.budget={...sampleBudget};state.source='example';state.from='nyc';state.currentHousing='alone';$('current-city').value='nyc';$('current-housing').value='alone';state.overrides={};$('budget-save-status').hidden=true;syncInputs();announce('New York example loaded.');});
 document.querySelectorAll('[data-close]').forEach(b=>b.addEventListener('click',()=>b.closest('dialog').close()));
 document.querySelectorAll('dialog').forEach(d=>d.addEventListener('click',event=>{if(event.target===d){const r=d.getBoundingClientRect();if(event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom)d.close();}}));
 for(const id of ['method-button','details-button'])$(id).addEventListener('click',()=>$('method-dialog').showModal());
 $('roommate-factor').addEventListener('input',()=>{state.factor=Number($('roommate-factor').value)/100;$('factor-output').textContent=`${Math.round(state.factor*100)}%`;render();});
+document.addEventListener('click',event=>{const item=event.target.closest('[data-edit]');if(item){hideTip();showCategory(item.dataset.edit);}});
+function hideTip(){$('chart-tooltip').hidden=true;}
+function showTip(item){
+  $('tooltip-title').textContent=item.dataset.tipTitle;$('tooltip-text').textContent=item.dataset.tipText;$('chart-tooltip').hidden=false;
+  const box=item.getBoundingClientRect(),tip=$('chart-tooltip').getBoundingClientRect();
+  $('chart-tooltip').style.left=`${Math.max(12,Math.min(innerWidth-tip.width-12,box.left+box.width/2-tip.width/2))}px`;
+  $('chart-tooltip').style.top=`${box.top>tip.height+18?box.top-tip.height-10:Math.min(innerHeight-tip.height-12,box.bottom+10)}px`;
+}
+document.addEventListener('pointerover',event=>{if(event.pointerType==='touch')return;const item=event.target.closest('[data-tip-title]');if(item)showTip(item);});
+document.addEventListener('pointerout',event=>{const item=event.target.closest('[data-tip-title]');if(item&&!item.contains(event.relatedTarget))hideTip();});
+document.addEventListener('focusin',event=>{const item=event.target.closest('[data-tip-title]');if(item)showTip(item);});
+document.addEventListener('focusout',hideTip);document.addEventListener('scroll',hideTip,true);document.addEventListener('keydown',event=>{if(event.key==='Escape')hideTip();});
 
 let draftCities=[];
 function renderCityPicker(){
@@ -176,6 +216,6 @@ $('add-pdf-row').addEventListener('click',()=>{
   transactions.push({description:'',amount:0,category:'review'});$('pdf-confirm').checked=false;renderTransactions();
   const last=$('transaction-list').lastElementChild;last.scrollIntoView({block:'nearest'});last.querySelector('input').focus();
 });
-$('apply-import').addEventListener('click',()=>{if($('apply-import').disabled)return;state.budget=aggregate(transactions,months());state.source=importKind;state.overrides={};syncInputs();$('import-dialog').close();const count=transactions.filter(t=>categories.some(c=>c.id===t.category)).length;$('budget-save-status').textContent=`Saved to your budget: ${count} transaction${count===1?'':'s'}, ${money(total(state.budget))} per month. Your city estimates are updated.`;$('budget-save-status').hidden=false;$('budget-save-status').scrollIntoView({block:'nearest',behavior:'smooth'});announce(`Your ${importKind.toUpperCase()} budget was saved. City estimates updated.`);});
-$('sample-csv').addEventListener('click',()=>{const contents='date,description,amount,category\n2026-09-01,Apartment rent,2200,rent\n2026-09-03,Groceries,420,groceries\n2026-09-06,"Coffee, takeout and restaurants",380,dining\n2026-09-08,Metro and rideshare,160,transport\n2026-09-10,Utilities and internet,150,utilities\n2026-09-12,Clothing and household shopping,210,shopping\n2026-09-15,Gym and concerts,220,entertainment\n2026-09-20,Subscriptions and insurance,180,fixed\n';const url=URL.createObjectURL(new Blob([contents],{type:'text/csv'}));const a=document.createElement('a');a.href=url;a.download='elsewhere-example.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
+$('apply-import').addEventListener('click',()=>{if($('apply-import').disabled)return;state.budget=aggregate(transactions,months());state.source=importKind;state.overrides={};syncInputs();$('import-dialog').close();const count=transactions.filter(t=>categories.some(c=>c.id===t.category)).length;$('budget-save-status').textContent=`Saved to your budget: ${count} transaction${count===1?'':'s'}, ${money(total(state.budget))} per month. Your CityFit comparisons are updated.`;$('budget-save-status').hidden=false;$('budget-save-status').scrollIntoView({block:'nearest',behavior:'smooth'});announce(`Your ${importKind.toUpperCase()} budget was saved. City estimates updated.`);});
+$('sample-csv').addEventListener('click',()=>{const contents='date,description,amount,category\n2026-09-01,Apartment rent,2200,rent\n2026-09-03,Groceries,420,groceries\n2026-09-06,"Coffee, takeout and restaurants",380,dining\n2026-09-08,Metro and rideshare,160,transport\n2026-09-10,Utilities and internet,150,utilities\n2026-09-12,Clothing and household shopping,210,shopping\n2026-09-15,Gym and concerts,220,entertainment\n2026-09-20,Subscriptions and insurance,180,fixed\n';const url=URL.createObjectURL(new Blob([contents],{type:'text/csv'}));const a=document.createElement('a');a.href=url;a.download='cityfit-example.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
 render();
