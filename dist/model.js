@@ -1,5 +1,6 @@
 import {categories} from './data.js';
-export const total = budget => categories.reduce((sum,c)=>sum+(Number(budget[c.id])||0),0);
+import {classifyTransaction, flattenTransactions, validSplits} from './merchant-engine.js';
+export const total = budget => categories.reduce((sum,c)=>sum+Math.round((Number(budget[c.id])||0)*100),0)/100;
 export function estimate(budget,from,to,currentHousing='alone',targetHousing='alone',roommateFactor=.65,override=null) {
   const result={};
   for(const c of categories) {
@@ -40,22 +41,8 @@ export function parseAmount(value) {
   if(!/^[+-]?\d+(?:\.\d{1,2})?$/.test(normalized))return null;
   const result=Number(normalized);return Number.isFinite(result)?result:null;
 }
-export function categorize(description,category='') {
-  const explicit=String(category).trim().toLowerCase();
-  if(categories.some(c=>c.id===explicit)) return explicit;
-  const s=(explicit+' '+description).toLowerCase();
-  if(/transfer|payment to credit card|credit card payment|payroll|salary|income|deposit|refund|venmo|zelle/.test(s))return 'exclude';
-  if(/rent|landlord|lease|housing|mortgage/.test(s))return 'rent';
-  if(/grocery|groceries|trader joe|whole foods|aldi|kroger|safeway|supermarket/.test(s))return 'groceries';
-  if(/restaurant|dining|coffee|cafe|starbucks|doordash|uber eats|chipotle|takeout|bar |brewery/.test(s))return 'dining';
-  if(/transport|uber|lyft|metro|transit|train|gasoline|parking|fuel|shell|chevron/.test(s))return 'transport';
-  if(/utilit|electric|water bill|internet|phone|verizon|comcast|energy/.test(s))return 'utilities';
-  if(/shopping|amazon|clothing|retail|target|ikea|nike/.test(s))return 'shopping';
-  if(/entertainment|fitness|gym|concert|cinema|movie|ticket|yoga/.test(s))return 'entertainment';
-  if(/subscription|netflix|spotify|insurance|loan|health|medical|other|apple/.test(s))return 'fixed';
-  return 'review';
-}
-export function buildTransactions(csv,mapping,sign='positive') {
+export function categorize(description,category='') {return classifyTransaction({description,providedCategory:category}).category;}
+export function buildTransactions(csv,mapping,sign='positive',options={}) {
   let invalid=0;
   const transactions=csv.rows.map((row,i)=>{
     const raw=parseAmount(row[mapping.amount]);
@@ -63,13 +50,18 @@ export function buildTransactions(csv,mapping,sign='positive') {
     const amount=sign==='negative'?-raw:raw;
     if(amount<=0)return null;
     const description=String(row[mapping.description]||`Transaction ${i+1}`);
-    return {description,amount,category:categorize(description,mapping.category>=0?row[mapping.category]:''),row:i+2};
+    const transaction={description,amount,providedCategory:mapping.category>=0?row[mapping.category]:'',date:row[mapping.date]||'',mcc:row[mapping.mcc]||'',merchantName:row[mapping.merchant]||'',location:row[mapping.location]||'',row:i+2};
+    return {...transaction,...classifyTransaction(transaction,options)};
   }).filter(Boolean);
   return {transactions,invalid,skipped:csv.rows.length-transactions.length-invalid};
 }
 export function aggregate(transactions,months) {
-  const budget=Object.fromEntries(categories.map(c=>[c.id,0]));
-  for(const t of transactions) if(Object.hasOwn(budget,t.category))budget[t.category]+=t.amount;
-  for(const c of categories)budget[c.id]=Math.round(budget[c.id]/months*100)/100;
-  return budget;
+  if(!Number.isInteger(months)||months<1||months>120)throw new Error('Choose 1–120 complete months.');
+  if(transactions.some(t=>!validSplits(t)||(!t.splits&&t.category==='review')))throw new Error('Resolve every transaction category and check split totals before saving.');
+  const cents=Object.fromEntries(categories.map(c=>[c.id,0]));
+  for(const t of flattenTransactions(transactions))if(Object.hasOwn(cents,t.category)){
+    if(!Number.isFinite(t.amount)||t.amount<=0)throw new Error('Check transaction amounts before saving.');
+    cents[t.category]+=Math.round(t.amount*100);
+  }
+  return Object.fromEntries(categories.map(c=>[c.id,Math.round(cents[c.id]/months)/100]));
 }

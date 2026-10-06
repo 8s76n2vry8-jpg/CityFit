@@ -2,3 +2,6 @@ node_modules/
 .env*
 .sites-runtime/
 *.tar.gz
+worker/assets.generated.js
+dist/server/
+dist/.openai/

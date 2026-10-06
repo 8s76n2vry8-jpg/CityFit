@@ -1,4 +1,5 @@
-import {categorize,parseAmount} from './model.js';
+import {parseAmount} from './model.js';
+import {classifyTransaction} from './merchant-engine.js';
 import './pdf-compat.js';
 
 // Rebuild lines from PDF text coordinates; extraction order is often not reading order.
@@ -40,7 +41,7 @@ export async function extractPDF(file,onProgress=()=>{}){
 const datePattern=/^(?:(?:\d{4}[-/]\d{1,2}[-/]\d{1,2})|(?:\d{1,2}[-/]\d{1,2}(?:[-/]\d{2,4})?)|(?:(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2}(?:,?\s+\d{4})?))\b\s*/i;
 const amountPattern=/\(?[-+]?\$?\s*(?:\d{1,3}(?:,\d{3})+|\d+)\.\d{2}\)?(?:\s?(?:CR|DR))?/gi;
 
-export function parseStatementLines(lines,amountPosition='first',negativeMeaning='credit'){
+export function parseStatementLines(lines,amountPosition='first',negativeMeaning='credit',options={}){
   const transactions=[];let section='unknown',pending=null,datedRows=0;
   for(const line of lines){
     const text=line.text.trim();let date=text.match(datePattern);
@@ -61,7 +62,8 @@ export function parseStatementLines(lines,amountPosition='first',negativeMeaning
     const description=pending.text.slice(0,amounts[0].index).trim();
     if(raw!==null && raw!==0 && description && !/^(?:opening|closing|beginning|ending|available)?\s*balance\b|^total\b/i.test(description)){
       const credit=pending.section==='credit'||/CR\s*$/i.test(selected[0])||(raw<0&&negativeMeaning==='credit');
-      transactions.push({description,amount:Math.abs(raw),category:credit?'exclude':categorize(description),date:pending.date,page:pending.page,original:text,multipleAmounts:amounts.length>1});
+      const transaction={description,amount:Math.abs(raw),credit,date:pending.date,page:pending.page,original:pending.text,multipleAmounts:amounts.length>1};
+      transactions.push({...transaction,...classifyTransaction(transaction,options)});
     }
     pending=null;
   }

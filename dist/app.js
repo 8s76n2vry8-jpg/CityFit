@@ -1,6 +1,9 @@
 import {cities,categories,sampleBudget} from './data.js';
 import {extractPDF,parseStatementLines} from './pdf-import.js?v=upload-fix-1';
 import {total,estimate,parseCSV,parseAmount,buildTransactions,aggregate} from './model.js';
+import {initializeAccount,account,requestJSON} from './account.js';
+import {classifyTransaction,flattenTransactions,validSplits,normalizeMerchant,applyAIResult} from './merchant-engine.js';
+import {renderTransaction,transactionNeedsReview} from './import-review.js';
 
 const $=id=>document.getElementById(id);
 const state={budget:{...sampleBudget},from:'nyc',currentHousing:'alone',targetHousing:'alone',factor:.65,selected:['chicago','austin','seattle'],active:'chicago',overrides:{},source:'example'};
@@ -126,51 +129,79 @@ $('city-search').addEventListener('input',renderCityPicker);
 $('city-options').addEventListener('change',event=>{const input=event.target;if(input.type!=='checkbox')return;if(input.checked && draftCities.length<3)draftCities.push(input.value);else draftCities=draftCities.filter(id=>id!==input.value);const focusId=input.value;renderCityPicker();$('city-options').querySelector(`input[value="${focusId}"]`)?.focus();});
 $('apply-cities').addEventListener('click',()=>{state.selected=[...draftCities];if(!state.selected.includes(state.active))state.active=state.selected[0];$('cities-dialog').close();render();announce('City shortlist updated.');});
 
-let csv=null,transactions=[],importKind='csv',pdfLines=[],fileRead=false,fileReading=false;
+let csv=null,transactions=[],importKind='csv',pdfLines=[],fileRead=false,fileReading=false,merchantRules={},rulesReady=false,correctionSaving=false,aiAvailable=false;
+
 const mappings=['amount-column','description-column','category-column'];
 const months=()=>Number($('import-months').value);
 function showError(message){$('import-error').textContent=message;$('import-error').hidden=false;}
 function updateImportTotal(){
   const valid=Number.isInteger(months())&&months()>=1&&months()<=120&&(importKind==='pdf'||$('amount-column').value!==$('description-column').value);
-  const included=transactions.filter(t=>categories.some(c=>c.id===t.category));
-  const validRows=included.every(t=>t.description.trim()&&Number.isFinite(t.amount)&&t.amount>0&&t.amount<=10000000);
-  $('import-total').textContent=!fileRead?'No file read yet':valid?`${money(total(aggregate(included,months())))}/mo · ${included.length} included`:'Check the month count';
-  $('apply-import').disabled=!fileRead||fileReading||!valid||!validRows||!included.length||(importKind==='pdf'&&!$('pdf-confirm').checked);
-  $('import-save-help').textContent=fileReading?'Reading your file. Saving will be available after it is read.':!fileRead?'Choose a readable PDF or CSV to begin.':!valid?'Choose different amount and description columns and enter 1–120 complete months.':!included.length?'Assign a spending category to at least one transaction to save.':!validRows?'Each included transaction needs a description and a valid amount greater than zero.':importKind==='pdf'&&!$('pdf-confirm').checked?'Review the transactions, then check the box above to enable saving.':`Ready to save ${included.length} transaction${included.length===1?'':'s'} into your budget.`;
+  const included=flattenTransactions(transactions).filter(t=>categories.some(c=>c.id===t.category));
+  const pending=transactions.filter(transactionNeedsReview).length;
+  const validRows=transactions.every(t=>t.description.trim()&&Number.isFinite(t.amount)&&t.amount>0&&t.amount<=10000000&&validSplits(t));
+  const ready=fileRead&&!fileReading&&valid&&validRows&&included.length&&!pending&&!correctionSaving;
+  $('import-total').textContent=!fileRead?'No file read yet':valid&&!pending&&validRows?`${money(total(aggregate(transactions,months())))}/mo · ${included.length} allocations`:'Review your transactions';
+  $('apply-import').disabled=!ready||(importKind==='pdf'&&!$('pdf-confirm').checked);
+  $('import-save-help').textContent=correctionSaving?'Saving your merchant rule…':fileReading?'Reading your file…':!fileRead?'Choose a readable PDF or CSV to begin.':!valid?'Choose different amount and description columns and enter 1–120 complete months.':!validRows?'Check descriptions, amounts, and split totals.':pending?`Review ${pending} transaction${pending===1?'':'s'} before saving. Confirm suggestions or choose categories.`:!included.length?'Assign a spending category to at least one transaction.':importKind==='pdf'&&!$('pdf-confirm').checked?'Check your PDF against the statement, then confirm below.':'Ready to save your reviewed spending.';
 }
 function updateReviewNote(){
-  const missing=transactions.filter(t=>t.category==='review').length,excluded=transactions.filter(t=>t.category==='exclude').length;
-  $('review-note').textContent=`${missing} need a spending category · ${excluded} marked excluded. ${importKind==='pdf'?'Check amounts as well as categories.':'All rows appear below.'}`;
+  const pending=transactions.filter(transactionNeedsReview).length,excluded=transactions.filter(t=>t.category==='exclude').length;
+  $('review-note').textContent=`${pending} need review · ${excluded} excluded · ${Object.keys(merchantRules).length} saved merchant rules`;
 }
 function renderTransactions(){
-  $('review-count').textContent=`${transactions.length} ${importKind==='pdf'?'extracted':'spending'} rows`;
+  $('review-count').textContent=`${transactions.length} transactions`;
   updateReviewNote();
-  $('transaction-list').innerHTML=transactions.map((t,i)=>`<div class="transaction-row ${importKind==='pdf'?'pdf-row':''}">${importKind==='pdf'?`<div><input class="transaction-description" data-description="${i}" value="${escape(t.description)}" aria-label="Description for transaction ${i+1}"><span class="pdf-row-meta">${escape(t.date||'Added manually')}${t.page?` · Page ${t.page}`:''}${t.multipleAmounts?' · Multiple amounts on line':''}</span></div><input class="transaction-amount-input" data-amount="${i}" type="number" min="0.01" max="10000000" step="0.01" value="${t.amount}" aria-label="Amount in dollars for transaction ${i+1}">`:`<span>${escape(t.description)}</span><span class="transaction-amount">${money(t.amount)}</span>`}<select data-transaction="${i}" data-review="${t.category==='review'}" aria-label="Category for ${escape(t.description||`transaction ${i+1}`)}"><option value="review" ${t.category==='review'?'selected':''}>Choose a spending category</option>${categories.map(c=>`<option value="${c.id}" ${t.category===c.id?'selected':''}>${c.name}</option>`).join('')}<option value="exclude" ${t.category==='exclude'?'selected':''}>Exclude</option></select></div>`).join('')||`<p class="empty-state">${importKind==='pdf'?'No dated transactions were detected. View the extracted text and add the transactions manually, or try a CSV export.':'No spending rows found. Try changing whether spending is positive or negative.'}</p>`;
+  $('transaction-list').innerHTML=transactions.map(renderTransaction).join('')||'<p class="empty-state">No spending rows found. Check the amount settings or add a missing PDF transaction.</p>';
+  $('ai-review-button').disabled=!aiAvailable||!transactions.some(t=>t.confidence<90&&!t.reviewed&&!t.credit&&!t.mixed);
   updateImportTotal();
 }
+function renderSavedRules(){
+  $('saved-merchant-rules').innerHTML=Object.entries(merchantRules).map(([key,r])=>`<div class="saved-rule"><span>${escape(r.merchant_name||r.merchantName||key)} · ${r.category==='exclude'?'Excluded':escape(categories.find(c=>c.id===r.category)?.name||r.category)}</span><button class="text-button" type="button" data-forget-rule="${escape(key)}">Forget</button></div>`).join('')||'<p class="small-copy">Your category corrections will appear here.</p>';
+}
+async function loadMerchantRules(){
+  rulesReady=false;
+  try{const data=await requestJSON('/api/merchant-rules');merchantRules=Object.fromEntries(data.rules.map(r=>[r.merchant_key,r]));rulesReady=true;$('merchant-save-status').textContent='Your saved merchant rules are loaded.';}
+  catch(error){merchantRules={};$('merchant-save-status').textContent='Saved rules could not be loaded. You can review this upload manually. '+error.message;}
+  renderSavedRules();
+}
+async function saveMerchantCorrection(t){
+  if(!t.remember||t.category==='review'||t.splits||t.credit)return;
+  correctionSaving=true;updateImportTotal();
+  try{await requestJSON('/api/merchant-rules',{method:'POST',body:JSON.stringify({merchantName:t.merchantName,category:t.category})});merchantRules[t.key]={merchant_name:t.merchantName,category:t.category};
+    for(const other of transactions)if(other!==t&&other.key===t.key&&!other.splits&&!other.credit){Object.assign(other,classifyTransaction(other,{rules:merchantRules}),{reviewed:true});}
+    $('merchant-save-status').textContent=`Remembered ${t.merchantName} as ${t.category==='exclude'?'excluded':categories.find(c=>c.id===t.category)?.name}. Future uploads will use this rule.`;
+  }catch(error){$('merchant-save-status').textContent='This category is applied to the current upload, but the rule was not saved. '+error.message;}
+  finally{correctionSaving=false;renderSavedRules();renderTransactions();}
+}
+$('saved-merchant-rules').addEventListener('click',async event=>{
+  const button=event.target.closest('[data-forget-rule]');if(!button)return;const key=button.dataset.forgetRule,r=merchantRules[key];button.disabled=true;
+  try{await requestJSON('/api/merchant-rules',{method:'DELETE',body:JSON.stringify({merchantName:r.merchant_name||r.merchantName||key})});delete merchantRules[key];renderSavedRules();$('merchant-save-status').textContent='Rule forgotten. Future uploads will use merchant matching again.';updateReviewNote();}
+  catch(error){button.disabled=false;$('merchant-save-status').textContent=error.message;}
+});
 function rebuildTransactions(){
   if(!csv)return;
-  const mapping={amount:Number($('amount-column').value),description:Number($('description-column').value),category:Number($('category-column').value)};
+  const find=rx=>csv.headers.findIndex(h=>rx.test(h));
+  const mapping={amount:Number($('amount-column').value),description:Number($('description-column').value),category:Number($('category-column').value),date:find(/^(?:date|transaction date|posted date)$/i),mcc:find(/^(?:mcc|merchant category code)$/i),merchant:find(/^(?:clean merchant|merchant name)$/i),location:find(/^(?:location|city)$/i)};
   if(mapping.amount===mapping.description){showError('Choose different columns for amounts and descriptions.');$('apply-import').disabled=true;return;}
-  const built=buildTransactions(csv,mapping,$('amount-sign').value);transactions=built.transactions;
+  const built=buildTransactions(csv,mapping,$('amount-sign').value,{rules:merchantRules});transactions=built.transactions;
   $('import-error').hidden=true;
   if(built.invalid)showError(`${built.invalid} row${built.invalid===1?' has':'s have'} an unreadable amount and will be skipped. Check these in your file before continuing. USD amounts such as 12.50, $12.50, or (12.50) are supported.`);
   renderTransactions();$('review-count').textContent+=` · ${built.skipped} non-spending rows skipped`;
 }
 function rebuildPDF(){
-  transactions=parseStatementLines(pdfLines,$('pdf-amount-position').value,$('pdf-negative-meaning').value).transactions;
+  transactions=parseStatementLines(pdfLines,$('pdf-amount-position').value,$('pdf-negative-meaning').value,{rules:merchantRules}).transactions;
   $('pdf-confirm').checked=false;renderTransactions();
 }
-$('csv-button').addEventListener('click',()=>$('import-dialog').showModal());
+$('csv-button').addEventListener('click',async()=>{if(!account())return;$('import-dialog').showModal();$('choose-upload').disabled=true;await loadMerchantRules();$('choose-upload').disabled=false;});
 $('choose-upload').addEventListener('click',()=>$('csv-file').click());
 $('csv-file').addEventListener('change',async event=>{
-  const file=event.target.files?.[0];if(!file)return;
+  const uploadInput=event.target,file=uploadInput.files?.[0];if(!file)return;
   $('import-settings').hidden=true;$('import-error').hidden=true;$('import-progress').hidden=true;$('file-read-status').hidden=true;$('pdf-confirm-label').hidden=true;$('pdf-confirm').checked=false;csv=null;transactions=[];pdfLines=[];fileRead=false;fileReading=false;updateImportTotal();
   importKind=/\.pdf$/i.test(file.name)||file.type==='application/pdf'?'pdf':'csv';
   const max=importKind==='pdf'?10:2;
-  if(file.size>max*1024*1024){showError(`Choose a ${importKind.toUpperCase()} smaller than ${max} MB.`);event.target.value='';return;}
-  if(!/\.(?:csv|pdf)$/i.test(file.name)&&!['application/pdf','text/csv'].includes(file.type)){showError('Please choose a PDF statement or CSV file.');event.target.value='';return;}
-  $('upload-label').textContent=file.name;event.target.disabled=true;$('choose-upload').disabled=true;fileReading=true;updateImportTotal();
+  if(file.size>max*1024*1024){showError(`Choose a ${importKind.toUpperCase()} smaller than ${max} MB.`);uploadInput.value='';return;}
+  if(!/\.(?:csv|pdf)$/i.test(file.name)&&!['application/pdf','text/csv'].includes(file.type)){showError('Please choose a PDF statement or CSV file.');uploadInput.value='';return;}
+  $('upload-label').textContent=file.name;uploadInput.disabled=true;$('choose-upload').disabled=true;fileReading=true;updateImportTotal();
   try{
     $('csv-mapping').hidden=importKind==='pdf';$('pdf-settings').hidden=importKind!=='pdf';$('add-pdf-row').hidden=importKind!=='pdf';$('pdf-confirm').checked=false;$('import-months').value='1';
     if(importKind==='pdf'){
@@ -194,29 +225,54 @@ $('csv-file').addEventListener('change',async event=>{
       $('file-read-status').hidden=false;$('file-read-status').textContent=`CSV read successfully: ${file.name}. ${csv.rows.length} row${csv.rows.length===1?'':'s'} read; ${transactions.length} spending transaction${transactions.length===1?'':'s'} found. Review the spending categories, then save to your budget.`;
     }
   }catch(error){console.error('File import failed:',error);fileRead=false;showError(error instanceof TypeError?'The PDF reader could not start in this browser. Refresh the page and try again. If this continues, use a CSV export.':error.message||'This file could not be read. Please try another statement or a CSV export.');$('import-progress').hidden=true;$('file-read-status').hidden=true;$('import-settings').hidden=true;$('pdf-confirm-label').hidden=true;}
-  finally{event.target.disabled=false;event.target.value='';$('choose-upload').disabled=false;fileReading=false;updateImportTotal();}
+  finally{uploadInput.disabled=false;uploadInput.value='';$('choose-upload').disabled=false;fileReading=false;updateImportTotal();}
 });
 [...mappings,'amount-sign'].forEach(id=>$(id).addEventListener('change',rebuildTransactions));
 ['pdf-amount-position','pdf-negative-meaning'].forEach(id=>$(id).addEventListener('change',rebuildPDF));
 $('pdf-confirm').addEventListener('change',updateImportTotal);
 $('import-months').addEventListener('input',updateImportTotal);
-$('transaction-list').addEventListener('change',event=>{
-  const index=event.target.dataset.transaction;if(index===undefined)return;
-  transactions[Number(index)].category=event.target.value;event.target.dataset.review=String(event.target.value==='review');
-  if(importKind==='pdf')$('pdf-confirm').checked=false;updateReviewNote();updateImportTotal();
+$('transaction-list').addEventListener('change',async event=>{
+  const el=event.target;
+  if(el.dataset.remember!==undefined){transactions[Number(el.dataset.remember)].remember=el.checked;return;}
+  if(el.dataset.transaction!==undefined){const t=transactions[Number(el.dataset.transaction)];t.category=el.value;t.confidence=100;t.status=el.value==='review'?'needs-category':'automatic';t.source='manual';t.reason='Category chosen by you.';t.reviewed=el.value!=='review';t.remember=$('transaction-list').querySelector(`[data-remember="${el.dataset.transaction}"]`)?.checked;renderTransactions();await saveMerchantCorrection(t);}
+  else if(el.dataset.splitCategory!==undefined){const t=transactions[Number(el.dataset.splitCategory)];t.splits[Number(el.dataset.part)].category=el.value;t.reviewed=true;renderTransactions();}
+  else if(el.dataset.description!==undefined){const t=transactions[Number(el.dataset.description)],original=t.originalDescriptor;t.description=el.value;delete t.splits;Object.assign(t,classifyTransaction({...t,originalDescriptor:t.description,merchantName:''},{rules:merchantRules}),{reviewed:false,originalDescriptor:original});renderTransactions();}
+  if(importKind==='pdf')$('pdf-confirm').checked=false;updateImportTotal();
 });
 $('transaction-list').addEventListener('input',event=>{
   const el=event.target;
   if(el.dataset.amount!==undefined)transactions[Number(el.dataset.amount)].amount=el.valueAsNumber;
-  else if(el.dataset.description!==undefined)transactions[Number(el.dataset.description)].description=el.value;
+  else if(el.dataset.splitAmount!==undefined){const t=transactions[Number(el.dataset.splitAmount)];t.splits[Number(el.dataset.part)].amount=el.valueAsNumber;const line=el.closest('.split-lines'),sum=t.splits.reduce((s,p)=>s+(Number(p.amount)||0),0);line.querySelector('.split-total').textContent=`Split total $${sum.toFixed(2)} / $${t.amount.toFixed(2)}${validSplits(t)?' · balanced':' · must match the charge'}`;line.querySelector('.split-total').className='split-total '+(validSplits(t)?'saving':'more');}
   else return;
-  $('pdf-confirm').checked=false;updateImportTotal();
+  $('pdf-confirm').checked=false;updateReviewNote();updateImportTotal();
+});
+$('transaction-list').addEventListener('click',async event=>{
+  const el=event.target.closest('button');if(!el)return;
+  let t;
+  if(el.dataset.approve!==undefined){t=transactions[Number(el.dataset.approve)];t.reviewed=true;t.remember=$('transaction-list').querySelector(`[data-remember="${el.dataset.approve}"]`)?.checked;renderTransactions();await saveMerchantCorrection(t);}
+  if(el.dataset.split!==undefined){t=transactions[Number(el.dataset.split)];const cents=Math.round(t.amount*100);if(cents<2){showError('A split needs at least two cents.');return;}t.splits=[{category:categories.some(c=>c.id===t.category)?t.category:'groceries',amount:Math.floor(cents/2)/100},{category:'shopping',amount:(cents-Math.floor(cents/2))/100}];t.reviewed=true;t.source='manual';t.remember=false;}
+  if(el.dataset.addSplit!==undefined){t=transactions[Number(el.dataset.addSplit)];t.splits.push({category:'misc',amount:0});}
+  if(el.dataset.removeSplit!==undefined){t=transactions[Number(el.dataset.removeSplit)];if(t.splits.length>2)t.splits.splice(Number(el.dataset.part),1);}
+  if(el.dataset.cancelSplit!==undefined){t=transactions[Number(el.dataset.cancelSplit)];delete t.splits;Object.assign(t,classifyTransaction(t,{rules:merchantRules}),{reviewed:false});}
+  if(t){$('pdf-confirm').checked=false;renderTransactions();}
+});
+$('ai-review-button').addEventListener('click',async()=>{
+  const pending=transactions.filter(t=>t.confidence<90&&!t.reviewed&&!t.credit&&!t.mixed).slice(0,25);if(!pending.length)return;
+  $('ai-review-button').disabled=true;fileReading=true;updateImportTotal();
+  try{const payload={transactions:pending.map(t=>({description:t.description,originalDescriptor:t.originalDescriptor,amount:t.amount,date:t.date,location:t.location}))};const data=await requestJSON('/api/categorize',{method:'POST',body:JSON.stringify(payload)});for(const result of data.results){const t=pending[result.id];if(t)Object.assign(t,applyAIResult(t,result));}$('merchant-save-status').textContent='AI suggestions are ready. Check any rows marked for review.';}
+  catch(error){$('merchant-save-status').textContent=error.message;}
+  finally{fileReading=false;renderTransactions();}
 });
 $('add-pdf-row').addEventListener('click',()=>{
   if(transactions.length>=10000){showError('Please import at most 10,000 transactions.');return;}
-  transactions.push({description:'',amount:0,category:'review'});$('pdf-confirm').checked=false;renderTransactions();
+  transactions.push({description:'',amount:0,...classifyTransaction({description:''})});$('pdf-confirm').checked=false;renderTransactions();
   const last=$('transaction-list').lastElementChild;last.scrollIntoView({block:'nearest'});last.querySelector('input').focus();
 });
-$('apply-import').addEventListener('click',()=>{if($('apply-import').disabled)return;state.budget=aggregate(transactions,months());state.source=importKind;state.overrides={};syncInputs();$('import-dialog').close();const count=transactions.filter(t=>categories.some(c=>c.id===t.category)).length;$('budget-save-status').textContent=`Saved to your budget: ${count} transaction${count===1?'':'s'}, ${money(total(state.budget))} per month. Your CityFit comparisons are updated.`;$('budget-save-status').hidden=false;$('budget-save-status').scrollIntoView({block:'nearest',behavior:'smooth'});announce(`Your ${importKind.toUpperCase()} budget was saved. City estimates updated.`);});
-$('sample-csv').addEventListener('click',()=>{const contents='date,description,amount,category\n2026-09-01,Apartment rent,2200,rent\n2026-09-03,Groceries,420,groceries\n2026-09-06,"Coffee, takeout and restaurants",380,dining\n2026-09-08,Metro and rideshare,160,transport\n2026-09-10,Utilities and internet,150,utilities\n2026-09-12,Clothing and household shopping,210,shopping\n2026-09-15,Gym and concerts,220,entertainment\n2026-09-20,Subscriptions and insurance,180,fixed\n';const url=URL.createObjectURL(new Blob([contents],{type:'text/csv'}));const a=document.createElement('a');a.href=url;a.download='cityfit-example.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
-render();
+$('apply-import').addEventListener('click',()=>{if($('apply-import').disabled)return;state.budget=aggregate(transactions,months());state.source=importKind;state.overrides={};syncInputs();$('import-dialog').close();const count=transactions.filter(t=>flattenTransactions([t]).some(p=>categories.some(c=>c.id===p.category))).length;$('budget-save-status').textContent=`Saved to your budget: ${count} transaction${count===1?'':'s'}, ${money(total(state.budget))} per month. Your CityFit comparisons are updated.`;$('budget-save-status').hidden=false;$('budget-save-status').scrollIntoView({block:'nearest',behavior:'smooth'});announce(`Your ${importKind.toUpperCase()} budget was saved. City estimates updated.`);});
+$('sample-csv').addEventListener('click',()=>{const contents='date,description,amount,category\n2026-09-01,Apartment rent,2200,rent\n2026-09-03,Groceries,420,groceries\n2026-09-06,"Coffee, takeout and restaurants",380,dining\n2026-09-08,Metro and rideshare,160,transport\n2026-09-10,Utilities and internet,150,utilities\n2026-09-12,Clothing and household shopping,210,shopping\n2026-09-15,Concerts,140,entertainment\n2026-09-16,Gym,80,health\n2026-09-20,Subscriptions,100,subscriptions\n2026-09-21,Insurance,80,insurance\n';const url=URL.createObjectURL(new Blob([contents],{type:'text/csv'}));const a=document.createElement('a');a.href=url;a.download='cityfit-example.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
+document.addEventListener('cityfit-account',async event=>{
+  state.budget={...sampleBudget};state.from='nyc';state.currentHousing='alone';state.targetHousing='alone';state.overrides={};state.source='example';merchantRules={};transactions=[];csv=null;pdfLines=[];fileRead=false;$('budget-save-status').hidden=true;syncInputs();
+  $('current-city').value='nyc';$('current-housing').value='alone';document.querySelectorAll('[data-housing]').forEach(b=>{b.classList.toggle('active',b.dataset.housing==='alone');b.setAttribute('aria-pressed',b.dataset.housing==='alone'?'true':'false');});$('import-settings').hidden=true;$('file-read-status').hidden=true;$('pdf-raw-text').textContent='';$('transaction-list').innerHTML='';$('upload-label').textContent='Choose a PDF or CSV';
+  if(event.detail){await loadMerchantRules();try{const data=await requestJSON('/api/account');aiAvailable=data.aiAvailable;}catch{aiAvailable=false;}$('ai-review-info').textContent=aiAvailable?'AI assistance can suggest categories for unclear merchants. Only these transaction details are sent for AI review.':'AI assistance is not connected yet. Unknown merchants need your choice.';}else{aiAvailable=false;renderSavedRules();}
+});
+render();initializeAccount();

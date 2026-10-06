@@ -18,14 +18,20 @@ export const cities = [
 ].map(([id,name,state,overall,rent,groceries,dining])=>({id,name,state,overall,rent,groceries,dining}));
 
 export const categories = [
-  {id:'rent',name:'Rent',index:'rent',color:'#3656ed',icon:'home'},
+  {id:'rent',name:'Housing',index:'rent',color:'#3656ed',icon:'home'},
   {id:'groceries',name:'Groceries',index:'groceries',color:'#39aaa1',icon:'basket'},
-  {id:'dining',name:'Dining & coffee',index:'dining',color:'#faaf4e',icon:'coffee'},
+  {id:'dining',name:'Dining & Coffee',index:'dining',color:'#faaf4e',icon:'coffee'},
   {id:'transport',name:'Transportation',index:'overall',color:'#7b83df',icon:'train'},
-  {id:'utilities',name:'Utilities',index:'overall',color:'#87b6e8',icon:'bolt'},
+  {id:'travel',name:'Travel',index:null,color:'#168ba8',icon:'train'},
   {id:'shopping',name:'Shopping',index:'overall',color:'#e38fb3',icon:'bag'},
-  {id:'entertainment',name:'Fun & fitness',index:'overall',color:'#aba3e8',icon:'music'},
-  {id:'fixed',name:'Subscriptions & other',index:null,color:'#a7afbf',icon:'repeat'},
+  {id:'entertainment',name:'Entertainment',index:'overall',color:'#aba3e8',icon:'music'},
+  {id:'health',name:'Health & Fitness',index:'overall',color:'#d26972',icon:'bolt'},
+  {id:'personal',name:'Personal Care',index:'overall',color:'#8f78ba',icon:'bag'},
+  {id:'utilities',name:'Utilities',index:'overall',color:'#87b6e8',icon:'bolt'},
+  {id:'subscriptions',name:'Subscriptions',index:null,color:'#71839d',icon:'repeat'},
+  {id:'insurance',name:'Insurance',index:null,color:'#568975',icon:'home'},
+  {id:'pets',name:'Pets',index:'overall',color:'#b18255',icon:'basket'},
+  {id:'misc',name:'Miscellaneous',index:null,color:'#a7afbf',icon:'repeat'},
 ];
-export const sampleBudget = {rent:2200,groceries:420,dining:380,transport:160,utilities:150,shopping:210,entertainment:220,fixed:180};
+export const sampleBudget = {rent:2200,groceries:420,dining:380,transport:160,travel:0,shopping:210,entertainment:140,health:80,personal:0,utilities:150,subscriptions:100,insurance:80,pets:0,misc:0};
 export const dataSource = 'https://www.numbeo.com/cost-of-living/region_rankings.jsp?region=021&title=2026';
