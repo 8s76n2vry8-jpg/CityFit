@@ -47,11 +47,15 @@ export function parseStatementLines(lines,amountPosition='first',negativeMeaning
     const text=line.text.trim();let date=text.match(datePattern);
     if(!date){
       if(/^(?:deposits|payments and credits|credits|deposits and (?:other )?additions|money (?:in|added))/i.test(text))section='credit';
-      else if(/^(?:withdrawals|electronic withdrawals|purchases|debits|payments and (?:other )?withdrawals|money (?:out|spent)|card transactions|transactions)/i.test(text))section='spending';
+      else if(/^(?:new charges\b|withdrawals|electronic withdrawals|purchases|debits|payments and (?:other )?withdrawals|money (?:out|spent)|card transactions|transactions)/i.test(text))section='spending';
       if(pending && !/^(?:page |date\b|description\b|total\b|balance\b)/i.test(text)) pending.text+=' '+text;
       else continue;
     }else{
-      datedRows++;pending={...line,date:date[0].trim(),text:text.slice(date[0].length),section};
+      const remainder=text.slice(date[0].length),transactionStart=remainder.replace(/^\*\s*/,'').trimStart();
+      // Statement prose and due-date/account-summary rows can begin with a date. A real
+      // transaction must include a merchant/description on that same dated row.
+      if(!transactionStart||/^[.,;:)]/.test(transactionStart)){pending=null;continue;}
+      datedRows++;pending={...line,date:date[0].trim(),text:remainder,section};
       const secondDate=pending.text.match(datePattern);if(secondDate)pending.text=pending.text.slice(secondDate[0].length);
     }
     if(!pending)continue;
@@ -60,7 +64,8 @@ export function parseStatementLines(lines,amountPosition='first',negativeMeaning
     const selected=amountPosition==='last'?amounts.at(-1):amounts[0];
     const rawText=selected[0].replace(/\s*(?:CR|DR)$/i,'').trim();const raw=parseAmount(rawText);
     const description=pending.text.slice(0,amounts[0].index).trim();
-    if(raw!==null && raw!==0 && description && !/^(?:opening|closing|beginning|ending|available)?\s*balance\b|^total\b/i.test(description)){
+    const statementNoise=/\b(?:pay over time limit|available pay over time limit|minimum payment due|payment due date|account summary|this date may not be the same date your bank will debit)\b/i.test(description);
+    if(raw!==null && raw!==0 && description && !statementNoise && !/^(?:opening|closing|beginning|ending|available)?\s*balance\b|^total\b/i.test(description)){
       const credit=pending.section==='credit'||/CR\s*$/i.test(selected[0])||(raw<0&&negativeMeaning==='credit');
       const transaction={description,amount:Math.abs(raw),credit,date:pending.date,page:pending.page,original:pending.text,multipleAmounts:amounts.length>1};
       transactions.push({...transaction,...classifyTransaction(transaction,options)});
