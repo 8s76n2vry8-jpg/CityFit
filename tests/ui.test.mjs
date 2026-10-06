@@ -26,6 +26,7 @@ test('account gate, CSV review, split editing, saved corrections, and logout wor
   Object.defineProperty($('csv-file'),'files',{value:[{name:'charges.csv',type:'text/csv',size:csv.length,text:async()=>csv}],configurable:true});change($('csv-file'));
   await until(()=>document.querySelectorAll('.merchant-row').length===4);assert($('transaction-list').textContent.includes('Blue Bottle Coffee'));assert($('transaction-list').textContent.includes('$8.74'));assert($('apply-import').disabled);
   click(document.querySelector('[data-split="1"]'));assert.equal(document.querySelectorAll('[data-split-amount="1"]').length,2);
+  assert($('apply-import').disabled);const firstCategory=document.querySelector('[data-split-category="1"][data-part="0"]');firstCategory.value='groceries';change(firstCategory);const secondCategory=document.querySelector('[data-split-category="1"][data-part="1"]');secondCategory.value='shopping';change(secondCategory);
   const splitAmount=document.querySelector('[data-split-amount="1"][data-part="0"]');splitAmount.value='10.01';input(splitAmount);const second=document.querySelector('[data-split-amount="1"][data-part="1"]');second.value='20';input(second);
   click(document.querySelector('[data-approve="2"]'));await until(()=>$('merchant-save-status').textContent.includes('Remembered Chipotle'));
   const unknown=document.querySelector('[data-transaction="3"]');unknown.value='dining';change(unknown);await until(()=>$('merchant-save-status').textContent.includes('Remembered My Unknown Merchant'));

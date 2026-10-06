@@ -159,19 +159,19 @@ function renderSavedRules(){
   $('saved-merchant-rules').innerHTML=Object.entries(merchantRules).map(([key,r])=>`<div class="saved-rule"><span>${escape(r.merchant_name||r.merchantName||key)} · ${r.category==='exclude'?'Excluded':escape(categories.find(c=>c.id===r.category)?.name||r.category)}</span><button class="text-button" type="button" data-forget-rule="${escape(key)}">Forget</button></div>`).join('')||'<p class="small-copy">Your category corrections will appear here.</p>';
 }
 async function loadMerchantRules(){
-  rulesReady=false;
-  try{const data=await requestJSON('/api/merchant-rules');merchantRules=Object.fromEntries(data.rules.map(r=>[r.merchant_key,r]));rulesReady=true;$('merchant-save-status').textContent='Your saved merchant rules are loaded.';}
-  catch(error){merchantRules={};$('merchant-save-status').textContent='Saved rules could not be loaded. You can review this upload manually. '+error.message;}
+  const owner=account()?.id;rulesReady=false;
+  try{const data=await requestJSON('/api/merchant-rules');if(account()?.id!==owner)return;merchantRules=Object.fromEntries(data.rules.map(r=>[r.merchant_key,r]));rulesReady=true;$('merchant-save-status').textContent='Your saved merchant rules are loaded.';}
+  catch(error){if(account()?.id!==owner)return;merchantRules={};$('merchant-save-status').textContent='Saved rules could not be loaded. You can review this upload manually. '+error.message;}
   renderSavedRules();
 }
 async function saveMerchantCorrection(t){
   if(!t.remember||t.category==='review'||t.splits||t.credit)return;
-  correctionSaving=true;updateImportTotal();
-  try{await requestJSON('/api/merchant-rules',{method:'POST',body:JSON.stringify({merchantName:t.merchantName,category:t.category})});merchantRules[t.key]={merchant_name:t.merchantName,category:t.category};
+  const owner=account()?.id;correctionSaving=true;updateImportTotal();
+  try{await requestJSON('/api/merchant-rules',{method:'POST',body:JSON.stringify({merchantName:t.merchantName,category:t.category})});if(account()?.id!==owner)return;merchantRules[t.key]={merchant_name:t.merchantName,category:t.category};
     for(const other of transactions)if(other!==t&&other.key===t.key&&!other.splits&&!other.credit){Object.assign(other,classifyTransaction(other,{rules:merchantRules}),{reviewed:true});}
     $('merchant-save-status').textContent=`Remembered ${t.merchantName} as ${t.category==='exclude'?'excluded':categories.find(c=>c.id===t.category)?.name}. Future uploads will use this rule.`;
   }catch(error){$('merchant-save-status').textContent='This category is applied to the current upload, but the rule was not saved. '+error.message;}
-  finally{correctionSaving=false;renderSavedRules();renderTransactions();}
+  finally{correctionSaving=false;if(account()?.id===owner){renderSavedRules();renderTransactions();}}
 }
 $('saved-merchant-rules').addEventListener('click',async event=>{
   const button=event.target.closest('[data-forget-rule]');if(!button)return;const key=button.dataset.forgetRule,r=merchantRules[key];button.disabled=true;
@@ -250,8 +250,8 @@ $('transaction-list').addEventListener('click',async event=>{
   const el=event.target.closest('button');if(!el)return;
   let t;
   if(el.dataset.approve!==undefined){t=transactions[Number(el.dataset.approve)];t.reviewed=true;t.remember=$('transaction-list').querySelector(`[data-remember="${el.dataset.approve}"]`)?.checked;renderTransactions();await saveMerchantCorrection(t);}
-  if(el.dataset.split!==undefined){t=transactions[Number(el.dataset.split)];const cents=Math.round(t.amount*100);if(cents<2){showError('A split needs at least two cents.');return;}t.splits=[{category:categories.some(c=>c.id===t.category)?t.category:'groceries',amount:Math.floor(cents/2)/100},{category:'shopping',amount:(cents-Math.floor(cents/2))/100}];t.reviewed=true;t.source='manual';t.remember=false;}
-  if(el.dataset.addSplit!==undefined){t=transactions[Number(el.dataset.addSplit)];t.splits.push({category:'misc',amount:0});}
+  if(el.dataset.split!==undefined){t=transactions[Number(el.dataset.split)];const cents=Math.round(t.amount*100);if(cents<2){showError('A split needs at least two cents.');return;}t.splits=[{category:'review',amount:Math.floor(cents/2)/100},{category:'review',amount:(cents-Math.floor(cents/2))/100}];t.reviewed=true;t.source='manual';t.remember=false;}
+  if(el.dataset.addSplit!==undefined){t=transactions[Number(el.dataset.addSplit)];t.splits.push({category:'review',amount:0});}
   if(el.dataset.removeSplit!==undefined){t=transactions[Number(el.dataset.removeSplit)];if(t.splits.length>2)t.splits.splice(Number(el.dataset.part),1);}
   if(el.dataset.cancelSplit!==undefined){t=transactions[Number(el.dataset.cancelSplit)];delete t.splits;Object.assign(t,classifyTransaction(t,{rules:merchantRules}),{reviewed:false});}
   if(t){$('pdf-confirm').checked=false;renderTransactions();}
@@ -273,6 +273,6 @@ $('sample-csv').addEventListener('click',()=>{const contents='date,description,a
 document.addEventListener('cityfit-account',async event=>{
   state.budget={...sampleBudget};state.from='nyc';state.currentHousing='alone';state.targetHousing='alone';state.overrides={};state.source='example';merchantRules={};transactions=[];csv=null;pdfLines=[];fileRead=false;$('budget-save-status').hidden=true;syncInputs();
   $('current-city').value='nyc';$('current-housing').value='alone';document.querySelectorAll('[data-housing]').forEach(b=>{b.classList.toggle('active',b.dataset.housing==='alone');b.setAttribute('aria-pressed',b.dataset.housing==='alone'?'true':'false');});$('import-settings').hidden=true;$('file-read-status').hidden=true;$('pdf-raw-text').textContent='';$('transaction-list').innerHTML='';$('upload-label').textContent='Choose a PDF or CSV';
-  if(event.detail){await loadMerchantRules();try{const data=await requestJSON('/api/account');aiAvailable=data.aiAvailable;}catch{aiAvailable=false;}$('ai-review-info').textContent=aiAvailable?'AI assistance can suggest categories for unclear merchants. Only these transaction details are sent for AI review.':'AI assistance is not connected yet. Unknown merchants need your choice.';}else{aiAvailable=false;renderSavedRules();}
+  if(event.detail){await loadMerchantRules();try{const data=await requestJSON('/api/account');aiAvailable=data.aiAvailable;}catch{aiAvailable=false;}$('ai-review-info').textContent=aiAvailable?'AI assistance can suggest categories for unclear merchants. Only these transaction details are sent for AI review.':'AI assistance is not connected yet. Unknown merchants need your choice.';}else{aiAvailable=false;document.querySelectorAll('dialog[open]').forEach(d=>d.close());renderSavedRules();}
 });
 render();initializeAccount();
