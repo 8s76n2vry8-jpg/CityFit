@@ -1,4 +1,5 @@
 import {categorize,parseAmount} from './model.js';
+import './pdf-compat.js';
 
 // Rebuild lines from PDF text coordinates; extraction order is often not reading order.
 export function textItemsToLines(items,page=1){
@@ -13,8 +14,8 @@ export function textItemsToLines(items,page=1){
 }
 
 export async function extractPDF(file,onProgress=()=>{}){
-  const pdfjs=await import('./vendor/pdf.min.mjs');
-  pdfjs.GlobalWorkerOptions.workerSrc=new URL('./vendor/pdf.worker.min.mjs',import.meta.url).href;
+  const pdfjs=await import('./vendor/pdf.compat.min.mjs');
+  pdfjs.GlobalWorkerOptions.workerSrc=new URL('./pdf-worker.js',import.meta.url).href;
   const task=pdfjs.getDocument({data:new Uint8Array(await file.arrayBuffer()),isEvalSupported:false,useSystemFonts:true});
   let document;
   try{

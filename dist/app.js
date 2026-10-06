@@ -1,5 +1,5 @@
 import {cities,categories,sampleBudget} from './data.js';
-import {extractPDF,parseStatementLines} from './pdf-import.js';
+import {extractPDF,parseStatementLines} from './pdf-import.js?v=upload-fix-1';
 import {total,estimate,parseCSV,parseAmount,buildTransactions,aggregate} from './model.js';
 
 const $=id=>document.getElementById(id);
@@ -85,7 +85,7 @@ $('city-search').addEventListener('input',renderCityPicker);
 $('city-options').addEventListener('change',event=>{const input=event.target;if(input.type!=='checkbox')return;if(input.checked && draftCities.length<3)draftCities.push(input.value);else draftCities=draftCities.filter(id=>id!==input.value);const focusId=input.value;renderCityPicker();$('city-options').querySelector(`input[value="${focusId}"]`)?.focus();});
 $('apply-cities').addEventListener('click',()=>{state.selected=[...draftCities];if(!state.selected.includes(state.active))state.active=state.selected[0];$('cities-dialog').close();render();announce('City shortlist updated.');});
 
-let csv=null,transactions=[],importKind='csv',pdfLines=[];
+let csv=null,transactions=[],importKind='csv',pdfLines=[],fileRead=false,fileReading=false;
 const mappings=['amount-column','description-column','category-column'];
 const months=()=>Number($('import-months').value);
 function showError(message){$('import-error').textContent=message;$('import-error').hidden=false;}
@@ -93,17 +93,18 @@ function updateImportTotal(){
   const valid=Number.isInteger(months())&&months()>=1&&months()<=120&&(importKind==='pdf'||$('amount-column').value!==$('description-column').value);
   const included=transactions.filter(t=>categories.some(c=>c.id===t.category));
   const validRows=included.every(t=>t.description.trim()&&Number.isFinite(t.amount)&&t.amount>0&&t.amount<=10000000);
-  $('import-total').textContent=valid?`${money(total(aggregate(included,months())))}/mo · ${included.length} included`:'Enter 1–120 complete months';
-  $('apply-import').disabled=!valid||!validRows||!included.length||(importKind==='pdf'&&!$('pdf-confirm').checked);
+  $('import-total').textContent=!fileRead?'No file read yet':valid?`${money(total(aggregate(included,months())))}/mo · ${included.length} included`:'Check the month count';
+  $('apply-import').disabled=!fileRead||fileReading||!valid||!validRows||!included.length||(importKind==='pdf'&&!$('pdf-confirm').checked);
+  $('import-save-help').textContent=fileReading?'Reading your file. Saving will be available after it is read.':!fileRead?'Choose a readable PDF or CSV to begin.':!valid?'Choose different amount and description columns and enter 1–120 complete months.':!included.length?'Assign a spending category to at least one transaction to save.':!validRows?'Each included transaction needs a description and a valid amount greater than zero.':importKind==='pdf'&&!$('pdf-confirm').checked?'Review the transactions, then check the box above to enable saving.':`Ready to save ${included.length} transaction${included.length===1?'':'s'} into your budget.`;
 }
 function updateReviewNote(){
   const missing=transactions.filter(t=>t.category==='review').length,excluded=transactions.filter(t=>t.category==='exclude').length;
-  $('review-note').textContent=`${missing} need a bucket · ${excluded} marked excluded. ${importKind==='pdf'?'Check amounts as well as categories.':'All rows appear below.'}`;
+  $('review-note').textContent=`${missing} need a spending category · ${excluded} marked excluded. ${importKind==='pdf'?'Check amounts as well as categories.':'All rows appear below.'}`;
 }
 function renderTransactions(){
   $('review-count').textContent=`${transactions.length} ${importKind==='pdf'?'extracted':'spending'} rows`;
   updateReviewNote();
-  $('transaction-list').innerHTML=transactions.map((t,i)=>`<div class="transaction-row ${importKind==='pdf'?'pdf-row':''}">${importKind==='pdf'?`<div><input class="transaction-description" data-description="${i}" value="${escape(t.description)}" aria-label="Description for transaction ${i+1}"><span class="pdf-row-meta">${escape(t.date||'Added manually')}${t.page?` · Page ${t.page}`:''}${t.multipleAmounts?' · Multiple amounts on line':''}</span></div><input class="transaction-amount-input" data-amount="${i}" type="number" min="0.01" max="10000000" step="0.01" value="${t.amount}" aria-label="Amount in dollars for transaction ${i+1}">`:`<span>${escape(t.description)}</span><span class="transaction-amount">${money(t.amount)}</span>`}<select data-transaction="${i}" data-review="${t.category==='review'}" aria-label="Category for ${escape(t.description||`transaction ${i+1}`)}"><option value="review" ${t.category==='review'?'selected':''}>Choose a bucket</option>${categories.map(c=>`<option value="${c.id}" ${t.category===c.id?'selected':''}>${c.name}</option>`).join('')}<option value="exclude" ${t.category==='exclude'?'selected':''}>Exclude</option></select></div>`).join('')||`<p class="empty-state">${importKind==='pdf'?'No dated transactions were detected. View the extracted text and add the transactions manually, or try a CSV export.':'No spending rows found. Try changing whether spending is positive or negative.'}</p>`;
+  $('transaction-list').innerHTML=transactions.map((t,i)=>`<div class="transaction-row ${importKind==='pdf'?'pdf-row':''}">${importKind==='pdf'?`<div><input class="transaction-description" data-description="${i}" value="${escape(t.description)}" aria-label="Description for transaction ${i+1}"><span class="pdf-row-meta">${escape(t.date||'Added manually')}${t.page?` · Page ${t.page}`:''}${t.multipleAmounts?' · Multiple amounts on line':''}</span></div><input class="transaction-amount-input" data-amount="${i}" type="number" min="0.01" max="10000000" step="0.01" value="${t.amount}" aria-label="Amount in dollars for transaction ${i+1}">`:`<span>${escape(t.description)}</span><span class="transaction-amount">${money(t.amount)}</span>`}<select data-transaction="${i}" data-review="${t.category==='review'}" aria-label="Category for ${escape(t.description||`transaction ${i+1}`)}"><option value="review" ${t.category==='review'?'selected':''}>Choose a spending category</option>${categories.map(c=>`<option value="${c.id}" ${t.category===c.id?'selected':''}>${c.name}</option>`).join('')}<option value="exclude" ${t.category==='exclude'?'selected':''}>Exclude</option></select></div>`).join('')||`<p class="empty-state">${importKind==='pdf'?'No dated transactions were detected. View the extracted text and add the transactions manually, or try a CSV export.':'No spending rows found. Try changing whether spending is positive or negative.'}</p>`;
   updateImportTotal();
 }
 function rebuildTransactions(){
@@ -120,23 +121,25 @@ function rebuildPDF(){
   $('pdf-confirm').checked=false;renderTransactions();
 }
 $('csv-button').addEventListener('click',()=>$('import-dialog').showModal());
+$('choose-upload').addEventListener('click',()=>$('csv-file').click());
 $('csv-file').addEventListener('change',async event=>{
   const file=event.target.files?.[0];if(!file)return;
-  $('import-settings').hidden=true;$('import-error').hidden=true;$('import-progress').hidden=true;csv=null;transactions=[];pdfLines=[];
+  $('import-settings').hidden=true;$('import-error').hidden=true;$('import-progress').hidden=true;$('file-read-status').hidden=true;$('pdf-confirm-label').hidden=true;$('pdf-confirm').checked=false;csv=null;transactions=[];pdfLines=[];fileRead=false;fileReading=false;updateImportTotal();
   importKind=/\.pdf$/i.test(file.name)||file.type==='application/pdf'?'pdf':'csv';
   const max=importKind==='pdf'?10:2;
   if(file.size>max*1024*1024){showError(`Choose a ${importKind.toUpperCase()} smaller than ${max} MB.`);event.target.value='';return;}
   if(!/\.(?:csv|pdf)$/i.test(file.name)&&!['application/pdf','text/csv'].includes(file.type)){showError('Please choose a PDF statement or CSV file.');event.target.value='';return;}
-  $('upload-label').textContent=file.name;event.target.disabled=true;
+  $('upload-label').textContent=file.name;event.target.disabled=true;$('choose-upload').disabled=true;fileReading=true;updateImportTotal();
   try{
-    $('csv-mapping').hidden=importKind==='pdf';$('pdf-settings').hidden=importKind!=='pdf';$('pdf-confirm-label').hidden=importKind!=='pdf';$('add-pdf-row').hidden=importKind!=='pdf';$('pdf-confirm').checked=false;$('import-months').value='1';
+    $('csv-mapping').hidden=importKind==='pdf';$('pdf-settings').hidden=importKind!=='pdf';$('add-pdf-row').hidden=importKind!=='pdf';$('pdf-confirm').checked=false;$('import-months').value='1';
     if(importKind==='pdf'){
       $('import-progress').hidden=false;$('import-progress').textContent='Opening PDF…';
       const result=await extractPDF(file,message=>{$('import-progress').textContent=message;});
       pdfLines=result.lines;$('pdf-raw-text').textContent=pdfLines.map(l=>`[Page ${l.page}] ${l.text}`).join('\n');
       $('pdf-amount-position').value='first';$('pdf-negative-meaning').value='credit';
-      $('import-settings').hidden=false;rebuildPDF();
-      $('import-progress').textContent=`Read ${result.pages} page${result.pages===1?'':'s'}. Review the extracted transactions below.`;
+      fileRead=true;$('import-settings').hidden=false;$('pdf-confirm-label').hidden=false;rebuildPDF();
+      $('import-progress').hidden=true;$('file-read-status').hidden=false;
+      $('file-read-status').textContent=`PDF read successfully: ${file.name}. ${result.pages} page${result.pages===1?'':'s'} read; ${transactions.length} transaction${transactions.length===1?'':'s'} detected. ${transactions.length?'Review them, then save to your budget.':'No dated transactions were identified. Add them manually from the extracted text.'}`;
     }else{
       csv=parseCSV(await file.text());
       const options=csv.headers.map((h,i)=>`<option value="${i}">${escape(h)}</option>`).join('');
@@ -146,10 +149,11 @@ $('csv-file').addEventListener('change',async event=>{
       $('amount-column').value=a>=0?a:csv.headers.length-1;$('description-column').value=d>=0?d:0;$('category-column').value=c;
       const aIndex=Number($('amount-column').value),values=csv.rows.map(r=>parseAmount(r[aIndex])).filter(v=>v!==null);
       $('amount-sign').value=values.filter(v=>v<0).length>values.filter(v=>v>0).length?'negative':'positive';
-      $('import-settings').hidden=false;rebuildTransactions();
+      fileRead=true;$('import-settings').hidden=false;rebuildTransactions();
+      $('file-read-status').hidden=false;$('file-read-status').textContent=`CSV read successfully: ${file.name}. ${csv.rows.length} row${csv.rows.length===1?'':'s'} read; ${transactions.length} spending transaction${transactions.length===1?'':'s'} found. Review the spending categories, then save to your budget.`;
     }
-  }catch(error){showError(error.message||'This file could not be read. Please try another statement or a CSV export.');$('import-progress').hidden=true;}
-  finally{event.target.disabled=false;event.target.value='';}
+  }catch(error){console.error('File import failed:',error);fileRead=false;showError(error instanceof TypeError?'The PDF reader could not start in this browser. Refresh the page and try again. If this continues, use a CSV export.':error.message||'This file could not be read. Please try another statement or a CSV export.');$('import-progress').hidden=true;$('file-read-status').hidden=true;$('import-settings').hidden=true;$('pdf-confirm-label').hidden=true;}
+  finally{event.target.disabled=false;event.target.value='';$('choose-upload').disabled=false;fileReading=false;updateImportTotal();}
 });
 [...mappings,'amount-sign'].forEach(id=>$(id).addEventListener('change',rebuildTransactions));
 ['pdf-amount-position','pdf-negative-meaning'].forEach(id=>$(id).addEventListener('change',rebuildPDF));
@@ -172,6 +176,6 @@ $('add-pdf-row').addEventListener('click',()=>{
   transactions.push({description:'',amount:0,category:'review'});$('pdf-confirm').checked=false;renderTransactions();
   const last=$('transaction-list').lastElementChild;last.scrollIntoView({block:'nearest'});last.querySelector('input').focus();
 });
-$('apply-import').addEventListener('click',()=>{if($('apply-import').disabled)return;state.budget=aggregate(transactions,months());state.source=importKind;state.overrides={};syncInputs();$('import-dialog').close();announce(`Your ${importKind.toUpperCase()} budget is ready. City estimates updated.`);});
+$('apply-import').addEventListener('click',()=>{if($('apply-import').disabled)return;state.budget=aggregate(transactions,months());state.source=importKind;state.overrides={};syncInputs();$('import-dialog').close();const count=transactions.filter(t=>categories.some(c=>c.id===t.category)).length;$('budget-save-status').textContent=`Saved to your budget: ${count} transaction${count===1?'':'s'}, ${money(total(state.budget))} per month. Your city estimates are updated.`;$('budget-save-status').hidden=false;$('budget-save-status').scrollIntoView({block:'nearest',behavior:'smooth'});announce(`Your ${importKind.toUpperCase()} budget was saved. City estimates updated.`);});
 $('sample-csv').addEventListener('click',()=>{const contents='date,description,amount,category\n2026-09-01,Apartment rent,2200,rent\n2026-09-03,Groceries,420,groceries\n2026-09-06,"Coffee, takeout and restaurants",380,dining\n2026-09-08,Metro and rideshare,160,transport\n2026-09-10,Utilities and internet,150,utilities\n2026-09-12,Clothing and household shopping,210,shopping\n2026-09-15,Gym and concerts,220,entertainment\n2026-09-20,Subscriptions and insurance,180,fixed\n';const url=URL.createObjectURL(new Blob([contents],{type:'text/csv'}));const a=document.createElement('a');a.href=url;a.download='elsewhere-example.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
 render();
